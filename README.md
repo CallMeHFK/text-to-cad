@@ -112,7 +112,7 @@ Neither command removes a skill that was retired upstream; drop one with
 ### Plugins
 
 Provider-native plugin installs are also available for Codex, Claude Code,
-ZCode, and Grok Build:
+ZCode, Grok Build, and QwenPaw:
 
 ```bash
 # Codex (requires Codex 0.142.0 or newer)
@@ -144,6 +144,15 @@ separate Grok plugin manifest.
 grok plugin install earthtojake/text-to-cad --trust
 grok plugin enable cad
 ```
+
+```bash
+# QwenPaw (clone the repo, then install the plugin directory)
+git clone https://github.com/earthtojake/text-to-cad.git
+qwenpaw plugin install text-to-cad/.qwenpaw-plugin
+```
+
+The QwenPaw plugin registers the skills as a skill provider: every skill is
+copied into each QwenPaw workspace and enabled by default.
 
 Restart your agent if newly installed skills do not appear. For local
 development, branch from `main`, open PRs against `main`, and follow
