@@ -100,6 +100,7 @@ jobs:
               - '.claude-plugin/**'
               - '.codex-plugin/**'
               - '.qwenpaw-plugin/**'
+              - '.zcode-plugin/**'
               - 'package.json'
               - 'package-lock.json'
               - '.gitattributes'
