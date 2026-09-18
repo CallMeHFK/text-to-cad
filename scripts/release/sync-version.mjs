@@ -25,7 +25,9 @@ export const jsonTargets = [
   },
   { path: ".claude-plugin/plugin.json", fields: [["version"]] },
   { path: ".codex-plugin/plugin.json", fields: [["version"]] },
+  { path: ".zcode-plugin/plugin.json", fields: [["version"]] },
   { path: ".claude-plugin/marketplace.json", fields: [["version"]], pluginEntries: ["cad"] },
+  { path: ".zcode-plugin/marketplace.json", fields: [["version"]], pluginEntries: ["cad"] },
 ];
 
 const tomlTargets = [

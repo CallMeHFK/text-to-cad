@@ -111,8 +111,8 @@ Neither command removes a skill that was retired upstream; drop one with
 
 ### Plugins
 
-Provider-native plugin installs are also available for Codex, Claude Code, and
-Grok Build:
+Provider-native plugin installs are also available for Codex, Claude Code,
+ZCode, and Grok Build:
 
 ```bash
 # Codex (requires Codex 0.142.0 or newer)
@@ -128,6 +128,12 @@ upgrade with `npm install -g @openai/codex@latest`.
 # Claude Code
 claude plugin marketplace add earthtojake/text-to-cad
 claude plugin install cad@text-to-cad
+```
+
+```bash
+# ZCode
+zcode plugin marketplace add earthtojake/text-to-cad
+zcode plugin install cad@text-to-cad
 ```
 
 Grok Build uses the existing `.claude-plugin/marketplace.json`; there is no
