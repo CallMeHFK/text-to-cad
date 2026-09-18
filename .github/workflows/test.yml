@@ -99,6 +99,7 @@ jobs:
               - 'VERSION'
               - '.claude-plugin/**'
               - '.codex-plugin/**'
+              - '.qwenpaw-plugin/**'
               - 'package.json'
               - 'package-lock.json'
               - '.gitattributes'
