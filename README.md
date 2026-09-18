@@ -111,8 +111,8 @@ Neither command removes a skill that was retired upstream; drop one with
 
 ### Plugins
 
-Provider-native plugin installs are also available for Codex, Claude Code, and
-Grok Build:
+Provider-native plugin installs are also available for Codex, Claude Code,
+ZCode, and Grok Build:
 
 ```bash
 # Codex (requires Codex 0.142.0 or newer)
@@ -130,6 +130,12 @@ claude plugin marketplace add earthtojake/text-to-cad
 claude plugin install cad@text-to-cad
 ```
 
+```bash
+# ZCode
+zcode plugin marketplace add earthtojake/text-to-cad
+zcode plugin install cad@text-to-cad
+```
+
 Grok Build uses the existing `.claude-plugin/marketplace.json`; there is no
 separate Grok plugin manifest.
 
@@ -142,6 +148,24 @@ grok plugin enable cad
 Restart your agent if newly installed skills do not appear. For local
 development, branch from `main`, open PRs against `main`, and follow
 [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### Windows 11: Smart App Control
+
+The CAD kernel behind the `cad`, `cad-viewer`, `dxf`, `urdf`, `srdf` and `sdf`
+skills is `OCP`, OpenCascade's Python binding, and its wheel ships an unsigned
+native module. Windows 11's Smart App Control blocks unsigned native code, so
+on a machine where it is on (the default on a fresh install) every `cadgen`
+command and `import build123d` fails with
+`ImportError: DLL load failed while importing OCP`, and Event Viewer records
+the refusal as Event ID 3077 under CodeIntegrity › Operational. `cadgen doctor`
+names this when it sees it.
+
+Smart App Control has no per-app exception. Either turn it off (Settings ›
+Privacy & security › Windows Security › App & browser control › Smart App
+Control settings; once off it can only be turned back on by reinstalling
+Windows) or run the CAD skills under WSL, where it does not apply. The wheel
+is built by the cadquery-ocp project, so signing it is not something this
+repository can do.
 
 ## 🛠️ Contributing
 
