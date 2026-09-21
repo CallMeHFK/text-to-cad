@@ -36,6 +36,15 @@ const pluginInstallCommands = [
     command:
       "git clone https://github.com/earthtojake/text-to-cad.git\nqwenpaw plugin install text-to-cad/.qwenpaw-plugin",
   },
+  // Cursor has no CLI install: a local plugin lives in ~/.cursor/plugins/local,
+  // in a directory named after the manifest's plugin name, discovered through
+  // .cursor-plugin/plugin.json. Clone it there rather than linking a checkout
+  // in -- Cursor ignores a symlink whose target sits outside that folder.
+  {
+    agent: "Cursor",
+    command:
+      "mkdir -p ~/.cursor/plugins/local\ngit clone https://github.com/earthtojake/text-to-cad.git ~/.cursor/plugins/local/cad",
+  },
 ];
 
 const skillGroups = [

@@ -483,8 +483,9 @@ production-output check.
 `main` is the source tree, what installers clone, and what releases are cut
 from. There is no development symlink layout and no generated publish tree:
 every path is the real file, and the repository root is itself the agent plugin
-package (`.claude-plugin/`, `.codex-plugin/`, `.qwenpaw-plugin/`, and
-`.zcode-plugin/` hold the manifests; the plugin's skills are `skills/`
+package (`.claude-plugin/`, `.codex-plugin/`, `.cursor-plugin/`,
+`.qwenpaw-plugin/`, and `.zcode-plugin/` hold the manifests; the plugin's
+skills are `skills/`
 directly — `.qwenpaw-plugin/` additionally carries a generated `skills/` copy
 for its directory-copying loader), so whatever is on `main` is what agent
 installers copy.
@@ -496,7 +497,8 @@ on every push:
   one loses data silently: the Skills CLI dereferences them, Claude Code
   preserves them, and Codex `plugin add` drops them with no error at all,
   publishing a skill whose files are simply missing at runtime.
-- **No LFS-tracked path under `skills/`.** Installers clone without git-lfs and
+- **No LFS-tracked path under `skills/` or its generated
+  `.qwenpaw-plugin/skills/` copy.** Installers clone without git-lfs and
   receive pointer files. `models/` and `assets/` stay LFS: nothing installs
   them, `.lfsconfig` excludes them from default fetches (a fresh clone is ~27 MB
   with `models/` as pointers), and `.gitattributes` export-ignores `models/`

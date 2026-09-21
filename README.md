@@ -114,7 +114,7 @@ Neither command removes a skill that was retired upstream; drop one with
 ### Plugins
 
 Provider-native plugin installs are also available for Codex, Claude Code,
-ZCode, Grok Build, and QwenPaw:
+ZCode, Grok Build, QwenPaw, and Cursor:
 
 ```bash
 # Codex (requires Codex 0.142.0 or newer)
@@ -155,6 +155,25 @@ qwenpaw plugin install text-to-cad/.qwenpaw-plugin
 
 The QwenPaw plugin registers the skills as a skill provider: every skill is
 copied into each QwenPaw workspace and enabled by default.
+
+```bash
+# Cursor (clone into Cursor's local plugin directory)
+mkdir -p ~/.cursor/plugins/local
+git clone https://github.com/earthtojake/text-to-cad.git ~/.cursor/plugins/local/cad
+```
+
+Cursor discovers the plugin through `.cursor-plugin/plugin.json` and loads the
+skills from the clone's `skills/` directory; restart Cursor or run
+**Developer: Reload Window** after installing. Clone it into place rather than
+symlinking a checkout you already have: a symlink under
+`~/.cursor/plugins/local` loads only when its target resolves to a directory
+inside that folder, so a link to another path is ignored with no error. The
+directory is named `cad` after the manifest's plugin name, and a marketplace
+install of the same name takes precedence over this local copy. Local imports
+are admin-controlled on Teams/Enterprise plans (**Allow Local Plugin Imports**);
+without them, install through a marketplace instead ([submitting it](https://cursor.com/marketplace/publish)
+for the public one, or adding this repository as a team marketplace under
+Dashboard -> Plugins). Updating the install is a `git pull` in that directory.
 
 Restart your agent if newly installed skills do not appear. For local
 development, branch from `main`, open PRs against `main`, and follow

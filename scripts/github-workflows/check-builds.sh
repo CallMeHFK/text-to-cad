@@ -84,7 +84,8 @@ check_generated_path() {
 # shipping contract is checked over the tree itself, here, on every run:
 #
 #   * no symlink anywhere (tracked): Codex drops them silently -- see above;
-#   * no LFS-tracked path under skills/: installers clone without git-lfs and get
+#   * no LFS-tracked path under skills/ or its generated plugin copy
+#     .qwenpaw-plugin/skills/: installers clone without git-lfs and get
 #     pointer files, which for a skill fixture or runtime asset is a silently broken
 #     install. models/ and assets/ stay LFS: nothing installs them, .lfsconfig keeps
 #     them as pointers, and .gitattributes export-ignores models/ from archives;
@@ -101,12 +102,17 @@ check_tree_has_no_symlinks() {
   fi
 }
 
+# The LFS patterns are extension-matched with no leading slash, so a stray
+# `*.step` anywhere reaches both trees. Naming the copy is defence in depth, not
+# a separate catch: test_qwenpaw_plugin.py byte-compares the two trees both ways,
+# so anything LFS in the copy is already LFS under skills/.
 check_skills_have_no_lfs_paths() {
   local hits
-  hits="$(git -C "$REPO_ROOT" ls-files skills | git -C "$REPO_ROOT" check-attr --stdin filter |
+  hits="$(git -C "$REPO_ROOT" ls-files skills .qwenpaw-plugin/skills |
+    git -C "$REPO_ROOT" check-attr --stdin filter |
     sed -n 's/: filter: lfs$//p')"
   if [ -n "$hits" ]; then
-    echo "LFS-tracked paths under skills/ (installers clone without git-lfs):" >&2
+    echo "LFS-tracked paths under skills/ or .qwenpaw-plugin/skills/ (installers clone without git-lfs):" >&2
     printf '%s\n' "$hits" | sed 's/^/  /' >&2
     exit 1
   fi

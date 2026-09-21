@@ -59,8 +59,11 @@ skills above as enabled.
 
 ## Requirements
 
-- QwenPaw 2.1.1 or newer (`qwenpaw_version.min` in `plugin.json`; the loader
-  checks `>=min` and disables the plugin otherwise).
+- QwenPaw 2.1.1 through 2.x (`qwenpaw_version` in `plugin.json`). The loader
+  requires `>=min` AND `<max` and disables the plugin with no error when either
+  fails, so the `max` of 2.99.0 is load-bearing: it covers every 2.x release,
+  and it has to be revisited before a QwenPaw 3 ships or this plugin stops
+  loading in silence.
 - Per skill, at runtime: Python ≥ 3.11 and the `cadgen` distribution from
   PyPI (the agent installs it from the skill's `requirements.txt`). `cad`
   rendering additionally needs a Chromium browser
@@ -107,5 +110,7 @@ rsync -a --delete --exclude '__pycache__' --exclude '.DS_Store' \
 ```
 
 `tests/python/global/test_qwenpaw_plugin.py` fails when the copy drifts from
-the canonical tree. The release PR stamps the version into `plugin.json`
-alongside the other plugin manifests via `scripts/release/sync-version.mjs`.
+the canonical tree, and `tests/python/global/test_skill_catalog_sync.py` fails
+when the table above drifts from it. The release PR stamps the version into
+`plugin.json` alongside the other plugin manifests via
+`scripts/release/sync-version.mjs`.

@@ -52,8 +52,7 @@ PLUGIN_DIR = Path(__file__).resolve().parent
 #: default everywhere else in this repo; under QwenPaw they start disabled and
 #: the user opts in per workspace, because they reach real machines: starting
 #: prints on a LAN printer (bambu-labs) and uploading parts for manufacture
-#: (sendcutsend). Everything else (cad, cad-viewer, step-parts, dxf, urdf,
-#: srdf, sdf, dfam-check, gcode) is analysis, authoring, or local-only.
+#: (sendcutsend). Every other skill is analysis, authoring, or local-only.
 FABRICATION_SKILLS = ("bambu-labs", "sendcutsend")
 
 #: Marker written into a workspace the first time the plugin provisions it.
