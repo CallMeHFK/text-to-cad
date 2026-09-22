@@ -208,6 +208,12 @@ class QwenPawPluginManifestTest(unittest.TestCase):
                     module._SKILLS_STATE["resolved"],
                     "configured path invalid",
                 )
+                # The reported path is the whole thing: /x/moved-away/skills
+                # shown as "skills" tells the user nothing about where to look.
+                self.assertEqual(
+                    module._SKILLS_STATE["path"],
+                    str(Path(tmp) / "moved-away"),
+                )
             finally:
                 module.PLUGIN_DIR = original
 

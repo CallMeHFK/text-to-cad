@@ -113,7 +113,9 @@ def _resolve_skills_dir(config: dict | None = None) -> Path | None:
             CONFIG_SKILLS_KEY,
             candidate,
         )
-        _SKILLS_STATE.update(resolved="configured path invalid", path=candidate.name)
+        _SKILLS_STATE.update(
+            resolved="configured path invalid", path=str(candidate)
+        )
         return None
 
     for label, candidate in (
