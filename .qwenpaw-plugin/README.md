@@ -12,11 +12,13 @@ workspace.
 | `cad`      | Creates, edits, and validates parametric CAD models; STEP default, STL/3MF/GLB exports.         |
 | `cad-viewer` | Opens a local browser preview (CAD Viewer) for CAD, robot-description, and DXF files.         |
 | `step-parts` | Finds off-the-shelf STEP parts (screws, bearings, motors, connectors) on step.parts.          |
+| `engineering-drawing` | Projects a dimensioned PDF drawing from the part: orthographic views, hole callouts, notes and a title block on ISO sheets. |
 | `dxf`      | Generates and validates 2D DXF drawings from Python sources or CAD geometry.                    |
 | `urdf`     | Authors and validates URDF robot descriptions.                                                  |
 | `srdf`     | Adds MoveIt2 planning groups, end effectors, poses, and collision rules to a URDF.              |
 | `sdf`      | Authors SDFormat models and worlds for simulators.                                              |
 | `dfam-check` | Measures mesh printability per process (FDM, SLS, SLA/DLP, metal PBF, MJF).                   |
+| `dfm`      | Reviews manufacturability per process: sheet-metal bends, machining access, molding draft and undercuts. |
 | `gcode`    | Slices mesh files into validated, printer-profiled FDM G-code with real slicer CLIs.            |
 | `bambu-labs` | Dry-runs, uploads, and cautiously starts local Bambu Lab print jobs from validated G-code.    |
 | `sendcutsend` | Checks DXF and STEP files before uploading a SendCutSend order.                              |
@@ -54,8 +56,8 @@ into each workspace's `skills/` directory, so the CAD skills appear under
 qwenpaw plugin list
 ```
 
-shows `text-to-cad` as installed; the workspace skill page lists the eleven
-skills above as enabled.
+shows `text-to-cad` as installed; the workspace skill page lists every skill in
+the table above as enabled.
 
 ## Requirements
 
