@@ -19,19 +19,26 @@ runs the same import on a checkout that has no ``qwenpaw`` package.
 Skills directory resolution
 ---------------------------
 
-The QwenPaw loader copies THIS directory (``.qwenpaw-plugin/``) into
-``~/.qwenpaw/plugins/<id>/`` at install time, so the plugin carries its own
-bundled ``skills/`` copy: ``<plugin_dir>/skills``. That copy is GENERATED
-from the repository's canonical ``skills/`` tree (the same content every
-other installer — Skills CLI, Claude Code, Codex — ships) and
-``tests/python/global/test_qwenpaw_plugin.py`` fails the build when the copy
-drifts from the canonical tree.
+The QwenPaw loader installs a plugin by copying THIS directory
+(``.qwenpaw-plugin/``) into ``~/.qwenpaw/plugins/<id>/``, so nothing outside it
+survives the install. Rather than commit a second copy of ``skills/`` to the
+repository, the plugin resolves a tree that already exists, in this order:
 
-The checkout sibling (``<plugin_dir>/../skills``) is probed as a fallback so
-a developer running the plugin straight from a repo layout without the
-generated copy still works. If neither exists the plugin logs a clear error
-and skips skill registration instead of raising: a broken path must degrade
-to "plugin without skills", not fail the QwenPaw app startup.
+1. ``plugins.cad.skills_dir`` in QwenPaw's own config, handed to the plugin as
+   ``api.config``. Point it at a checkout's ``skills/`` and the install follows
+   that tree live, the way the Claude, Codex and Skills-CLI surfaces do.
+2. ``<plugin_dir>/skills`` -- a copy generated on demand with the rsync recipe
+   in this directory's README, for an install with no checkout to point at.
+3. ``<plugin_dir>/../skills`` -- the sibling a checkout provides, so the plugin
+   also works when it is run in place rather than installed.
+
+A configured path that does not resolve is reported as an error and is NOT
+silently replaced by a lower-priority candidate: an outdated path should be
+loud, not shadowed by a stale copy. ``/cad-setup`` prints which tree won.
+
+If nothing resolves, the plugin logs a clear error and skips skill registration
+instead of raising: a broken path must degrade to "plugin without skills", not
+fail the QwenPaw app startup.
 """
 
 from __future__ import annotations
@@ -47,6 +54,16 @@ if TYPE_CHECKING:  # pragma: no cover - type hints only, never evaluated
 logger = logging.getLogger(__name__)
 
 PLUGIN_DIR = Path(__file__).resolve().parent
+
+#: QwenPaw hands each plugin the ``plugins.<id>`` section of its own config as
+#: ``api.config``; this key names a skills tree to provision from, which beats
+#: any copy and is what lets an install follow one source of truth.
+CONFIG_SKILLS_KEY = "skills_dir"
+
+#: What the last ``register()`` resolved, reported by /cad-setup. A plugin with
+#: no reachable skills tree still registers that command, because it is the
+#: thing the user runs once skills are missing.
+_SKILLS_STATE: dict[str, str] = {"resolved": "not registered", "path": ""}
 
 #: Skills the fabrication/handoff boundary applies to. These are enabled by
 #: default everywhere else in this repo; under QwenPaw they start disabled and
@@ -68,15 +85,46 @@ _PROMPT_HINT = (
 )
 
 
-def _resolve_skills_dir() -> Path | None:
-    """Return the skills directory the plugin will provision from, or None."""
-    candidates = [
-        PLUGIN_DIR / "skills",
-        PLUGIN_DIR.parent / "skills",
-    ]
-    for candidate in candidates:
-        if candidate.is_dir() and (candidate / "cad" / "SKILL.md").is_file():
+def _is_skills_tree(candidate: Path) -> bool:
+    """True when *candidate* holds this library's skills (``cad`` is the canary)."""
+    return candidate.is_dir() and (candidate / "cad" / "SKILL.md").is_file()
+
+
+def _resolve_skills_dir(config: dict | None = None) -> Path | None:
+    """Return the skills directory the plugin will provision from, or None.
+
+    Records which candidate won in ``_SKILLS_STATE`` so ``/cad-setup`` can
+    report it: the caller has no way to tell a configured tree from a copy.
+
+    A configured path that does not resolve is reported and returns None rather
+    than falling through: a stale pointer is a misconfiguration to fix, and a
+    silent fallback to a copy would let it serve skills nobody updated.
+    """
+    configured = (config or {}).get(CONFIG_SKILLS_KEY)
+    if isinstance(configured, str) and configured.strip():
+        candidate = Path(configured.strip()).expanduser()
+        if _is_skills_tree(candidate):
+            _SKILLS_STATE.update(resolved="configured", path=str(candidate))
             return candidate
+        logger.error(
+            "text-to-cad: %s=%s is not a skills tree (no cad/SKILL.md inside). "
+            "Point it at a text-to-cad checkout's skills/ directory, or drop "
+            "the key to fall back to a bundled copy.",
+            CONFIG_SKILLS_KEY,
+            candidate,
+        )
+        _SKILLS_STATE.update(resolved="configured path invalid", path=candidate.name)
+        return None
+
+    for label, candidate in (
+        ("bundled copy", PLUGIN_DIR / "skills"),
+        ("checkout sibling", PLUGIN_DIR.parent / "skills"),
+    ):
+        if _is_skills_tree(candidate):
+            _SKILLS_STATE.update(resolved=label, path=str(candidate))
+            return candidate
+
+    _SKILLS_STATE.update(resolved="nothing reachable", path="")
     return None
 
 
@@ -210,6 +258,11 @@ async def _cad_setup_handler(ctx, args: str):
         skills_root = workspace_dir / "skills"
         lines.append(f"  workspace: {workspace_dir}")
 
+    source = _SKILLS_STATE["resolved"]
+    if _SKILLS_STATE["path"]:
+        source = f"{source} ({_SKILLS_STATE['path']})"
+    lines.append(f"  skills source: {source}")
+
     # 1. cadgen binary presence + version
     import shutil
 
@@ -284,14 +337,16 @@ class TextToCadPlugin:
         Args:
             api: PluginApi instance provided by the QwenPaw loader.
         """
-        skills_dir = _resolve_skills_dir()
+        skills_dir = _resolve_skills_dir(getattr(api, "config", None))
         if skills_dir is None:
             logger.error(
-                "text-to-cad: no skills directory found next to %s or inside "
-                "it — skill registration skipped. Install the plugin from a "
-                "text-to-cad checkout (repo root) or a package that bundles "
-                "skills/ inside the plugin directory.",
+                "text-to-cad: no skills/ tree reachable from %s — skill "
+                "registration skipped. Either set %s in this plugin's config "
+                "to a text-to-cad checkout's skills/ directory, or generate "
+                "the bundled copy with the rsync recipe in .qwenpaw-plugin/"
+                "README.md. Run /cad-setup to see what was looked for.",
                 PLUGIN_DIR,
+                CONFIG_SKILLS_KEY,
             )
         else:
             logger.info("Registering text-to-cad skills (%s)...", skills_dir)

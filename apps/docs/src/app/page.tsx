@@ -30,11 +30,12 @@ const pluginInstallCommands = [
     command: "grok plugin install earthtojake/text-to-cad --trust",
   },
   // QwenPaw has no marketplace resolution over GitHub; its CLI installs a plugin
-  // from a local directory or a ZIP, so the repo is cloned first.
+  // from a local directory or a ZIP, so the repo is cloned first. The plugin
+  // ships no skills copy, so the config names which skills/ tree to provision.
   {
     agent: "QwenPaw",
     command:
-      "git clone https://github.com/earthtojake/text-to-cad.git\nqwenpaw plugin install text-to-cad/.qwenpaw-plugin",
+      "git clone https://github.com/earthtojake/text-to-cad.git\nqwenpaw plugin install text-to-cad/.qwenpaw-plugin\n# then add {\"plugins\":{\"cad\":{\"skills_dir\":\"~/text-to-cad/skills\"}}} to ~/.qwenpaw/config.json and restart",
   },
   // Cursor has no CLI install: a local plugin lives in ~/.cursor/plugins/local,
   // in a directory named after the manifest's plugin name, discovered through

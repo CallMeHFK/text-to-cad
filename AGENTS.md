@@ -47,8 +47,8 @@ in development too — install `requirements-dev.txt`, never a skill's
 `models/` stays on `main` as LFS pointers (`.lfsconfig` excludes it from
 default fetches; `.gitattributes` export-ignores it from archives); nothing
 installs it. `scripts/github-workflows/check-builds.sh` enforces the shipping
-contract on every push: no tracked symlink, no LFS path under `skills/` or its
-generated `.qwenpaw-plugin/skills/` copy, no skill reaching into a repo root.
+contract on every push: no tracked symlink, no LFS path under `skills/`, no
+skill reaching into a repo root.
 See the Releases section in `CONTRIBUTING.md` for the full flow, the resume
 path, the rehearsal, and local/manual fallbacks.
 
@@ -57,9 +57,10 @@ path, the rehearsal, and local/manual fallbacks.
 - `skills/`: agent skills and their references/scripts.
 - `.claude-plugin/`, `.codex-plugin/`, `.cursor-plugin/`, `.qwenpaw-plugin/`,
   `.zcode-plugin/`: agent plugin manifests. The repository root is the plugin
-  package; its skills are `skills/` directly. `.qwenpaw-plugin/` additionally
-  carries a generated `skills/` copy because the QwenPaw loader copies the
-  plugin directory.
+  package; its skills are `skills/` directly. The QwenPaw loader copies only
+  the one plugin directory, so rather than commit a second `skills/` tree it
+  resolves one at runtime — plugin config first, then a gitignored generated
+  copy, then the checkout sibling.
 - `models/`: sample and durable CAD/robot-description fixtures.
 - `apps/viewer/`: the CAD Viewer's React client (its backend is `cadgen.viewer`).
 - `packages/cadgen-js`: shared JS CAD/render/runtime code, UI-framework agnostic.

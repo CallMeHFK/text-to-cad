@@ -151,10 +151,15 @@ grok plugin enable cad
 # QwenPaw (clone the repo, then install the plugin directory)
 git clone https://github.com/earthtojake/text-to-cad.git
 qwenpaw plugin install text-to-cad/.qwenpaw-plugin
+# then name the tree in ~/.qwenpaw/config.json and restart
+# ({"plugins": {"cad": {"skills_dir": "~/text-to-cad/skills"}}}; ~ expands)
 ```
 
 The QwenPaw plugin registers the skills as a skill provider: every skill is
-copied into each QwenPaw workspace and enabled by default.
+copied into each QwenPaw workspace and enabled by default. It ships no copy of
+them, so it needs that path (or the generated copy described in
+[`.qwenpaw-plugin/README.md`](.qwenpaw-plugin/README.md)) to know which
+`skills/` tree to provision.
 
 ```bash
 # Cursor (clone into Cursor's local plugin directory)

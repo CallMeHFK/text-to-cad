@@ -30,25 +30,42 @@ first use (`python -m pip install -r requirements.txt`).
 
 ## Install
 
-Plugin operations require QwenPaw to be offline.
+The package carries no second copy of the skills: it resolves a `skills/` tree
+when it loads, so name one in QwenPaw's own config (`~/.qwenpaw/config.json`;
+the `plugins` map is keyed by plugin id):
 
-From a clone of this repository:
+```json
+{ "plugins": { "cad": { "skills_dir": "/path/to/text-to-cad/skills" } } }
+```
+
+Plugin operations require QwenPaw to be offline. Install from the clone:
 
 ```bash
 qwenpaw plugin install /path/to/text-to-cad/.qwenpaw-plugin
 ```
 
-Or from a ZIP of the plugin directory:
+Then start QwenPaw (`qwenpaw app`). On startup the plugin copies every skill
+into each workspace's `skills/` directory, so the CAD skills appear under
+**Workspace → Skills** alongside QwenPaw's built-ins.
+
+Installing while the app is running hot-loads the plugin before the config
+above reaches it, so the skills appear on the next start rather than
+immediately: only the boot path (`load_all_plugins`) hands a plugin its
+`plugins.<id>` config.
+
+No checkout to point at? Generate the bundled copy and the plugin resolves it
+with no config involved:
 
 ```bash
 cd /path/to/text-to-cad
+rsync -a --delete --exclude '__pycache__' --exclude '.DS_Store' \
+  skills/ .qwenpaw-plugin/skills/
 zip -r text-to-cad-qwenpaw.zip .qwenpaw-plugin
 qwenpaw plugin install text-to-cad-qwenpaw.zip
 ```
 
-Then start QwenPaw (`qwenpaw app`). On startup the plugin copies every skill
-into each workspace's `skills/` directory, so the CAD skills appear under
-**Workspace → Skills** alongside QwenPaw's built-ins.
+That copy is gitignored, and a ZIP install needs it: an archive of this
+directory carries nothing else.
 
 ## Verify
 
@@ -99,29 +116,28 @@ your own enable/disable choices always win.
 ├── plugin.json   # Manifest: id "cad", type "general"
 ├── plugin.py     # Entry point: skill provider, /cad-setup, fabrication gate
 ├── README.md     # This file
-└── skills/       # GENERATED copy of the canonical skills/ — do not edit
+└── skills/       # optional generated copy (gitignored) — never edit in place
 ```
 
-The QwenPaw loader installs a plugin by copying this directory, so the skill
-tree travels inside it. `skills/` here is generated from the repository's
-canonical `skills/` (what every other installer ships):
+`_resolve_skills_dir()` picks the tree to provision from, in order: the
+`skills_dir` this plugin's config names, then a generated copy here, then the
+checkout's `skills/` beside the package. `/cad-setup` prints which one won. A
+configured path that does not resolve is an error and stops resolution:
+falling through would let a moved checkout keep being served by a copy nobody
+updated, which is the failure this whole ordering exists to avoid.
 
-```bash
-rsync -a --delete --exclude '__pycache__' --exclude '.DS_Store' \
-  skills/ .qwenpaw-plugin/skills/
-```
+Two shapes are deliberately not used.
 
-`tests/python/global/test_qwenpaw_plugin.py` fails when the copy drifts from
-the canonical tree, and `tests/python/global/test_skill_catalog_sync.py` fails
-when the table above drifts from it. The release PR stamps the version into
-`plugin.json` alongside the other plugin manifests via
-`scripts/release/sync-version.mjs`.
+*A symlink* (`skills -> ../skills`) would need no config, but it only survives
+because the loader's `shutil.copytree` dereferences by default — and the ZIP
+route breaks that: `_safe_extract_zip` extracts with `zipfile.extractall`,
+which recreates no links, so the member lands as a text file containing
+`../skills`, no tree resolves, and the plugin registers nothing with one log
+line. QwenPaw also treats links in skill content as an input to reject rather
+than a feature to enable: it refuses a linked skill source, scans for links
+inside one, and rejects symlink members in a skill ZIP outright.
 
-Why a committed copy and not a `skills -> ../skills` symlink: QwenPaw installs
-a plugin with `shutil.copytree`, whose default `symlinks=False` dereferences, so
-a link would survive a directory install — but a ZIP install extracts with
-`zipfile.extractall`, which recreates no links at all and leaves a regular file
-containing the text `../skills`. The plugin then resolves no skills directory
-and registers nothing, logging only a warning. The copy is the price of the ZIP
-route above; `scripts/github-workflows/check-builds.sh` bans tracked symlinks
-repo-wide for the unrelated reason that Codex drops them silently.
+*A committed copy* is what this directory used to ship — 102 files, and a
+second tree to keep in step. It now stays out of the repository for the same
+reason `packages/cadgen/_runtime` does: regenerable from source, so the source
+is the only thing reviewed.
