@@ -114,3 +114,12 @@ the canonical tree, and `tests/python/global/test_skill_catalog_sync.py` fails
 when the table above drifts from it. The release PR stamps the version into
 `plugin.json` alongside the other plugin manifests via
 `scripts/release/sync-version.mjs`.
+
+Why a committed copy and not a `skills -> ../skills` symlink: QwenPaw installs
+a plugin with `shutil.copytree`, whose default `symlinks=False` dereferences, so
+a link would survive a directory install — but a ZIP install extracts with
+`zipfile.extractall`, which recreates no links at all and leaves a regular file
+containing the text `../skills`. The plugin then resolves no skills directory
+and registers nothing, logging only a warning. The copy is the price of the ZIP
+route above; `scripts/github-workflows/check-builds.sh` bans tracked symlinks
+repo-wide for the unrelated reason that Codex drops them silently.
