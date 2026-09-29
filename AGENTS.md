@@ -62,8 +62,9 @@ path, the rehearsal, and local/manual fallbacks.
   resolves one at runtime — plugin config first, then a gitignored generated
   copy, then the checkout sibling.
 - `models/`: sample and durable CAD/robot-description fixtures.
-- `apps/viewer/`: the CAD Viewer's React client (its backend is `cadgen.viewer`).
-- `packages/cadgen-js`: shared JS CAD/render/runtime code, UI-framework agnostic.
+- `apps/web/`: the CAD Viewer's React client (its backend is `cadgen.viewer`).
+- `packages/core`: `@text-to-cad/core`, shared CAD/runtime/client code without React.
+- `packages/ui`: `@text-to-cad/ui`, the shared FileViewer, renderers, controls and styles.
 - `packages/cadgen`: the published distribution — STEP/GLB/topology generation,
   the skill CLI parsers, the CAD Viewer backend + client, and the Node/browser
   runtimes it executes.
@@ -75,8 +76,8 @@ path, the rehearsal, and local/manual fallbacks.
 ## Repo Rules
 
 - Boundaries and design laws live in each package's README: read
-  `packages/cadgen/README.md` (the laws), `packages/cadgen-js/README.md`,
-  `apps/viewer/README.md`, and `apps/docs/README.md` before changing
+  `packages/cadgen/README.md` (the laws), `packages/core/README.md`, `packages/ui/README.md`,
+  `apps/web/README.md`, and `apps/docs/README.md` before changing
   generation, rendering, storage, layout, or public interfaces.
 - A README holds the laws; the mechanism each law constrains lives one link
   away, and the README names the link. Read the README, then follow the one
@@ -84,9 +85,9 @@ path, the rehearsal, and local/manual fallbacks.
   - `packages/cadgen/`: `STORE.md` (the store contract — sectioned, with a
     table of contents), `MEMO.md` (`@memo`, and the process-wide geometric
     `Shape` identity it installs), `SNAPSHOTS.md` (snapshot `--debug` timings).
-  - `packages/cadgen-js/docs/`: `render-pipeline.md`, `resource-ownership.md`,
+  - `packages/core/docs/`: `render-pipeline.md`, `resource-ownership.md`,
     `tube-deformation.md`.
-  - `apps/viewer/docs/`: `settings-ui.md` (BINDING for any settings control),
+  - `packages/ui/docs/`: `settings-ui.md` (BINDING for any settings control),
     `render-types.md`, `render-mode.md`, `lod.md`, `storage.md`, `backend.md`.
 - Ships-alone law: `packages/cadgen` (the built PyPI wheel) works in isolation
   outside this repo, so its markdown must not refer to anything outside the
@@ -119,9 +120,18 @@ path, the rehearsal, and local/manual fallbacks.
   generate small fixtures in fresh temporary directories or use tiny test-owned
   fixtures, with their own cache stores and cleanup. Repo `tmp/` is fine.
   Enforced by `tests/python/global/test_tests_are_self_contained.py`.
-- Every test file is reached by a runner under `scripts/test/`, and a collector
-  that finds nothing fails the run rather than reporting a group that never
-  ran — so a renamed or emptied test directory stops CI instead of going quiet.
+- Every test runs in CI. Each test file is reached by a runner under
+  `scripts/test/`, every runner is called by a `test.yml` job on the changes that
+  can break it, and a collector that finds nothing fails the run rather than
+  reporting a group that never ran. A test no CI job runs is dead: wire it in or
+  delete it. There are no manual-only test gates. Enforced by
+  `tests/python/global/test_ci_workspace_selection.py`.
+- Tests and CI are short and succinct. Test a contract, a user flow or a fixed bug,
+  once, at the cheapest level that exercises the real path: a unit or jsdom test
+  first, a real browser (WebGL) only for what needs one. Await the condition, never
+  a fixed sleep or a wall-clock bound; a flaky test is fixed or deleted, never
+  retried. CI time is a budget: the `web` job stays within 7 minutes, and a
+  change that lengthens any job says what it costs and why in its PR.
 - Benchmarks under `scripts/bench/` are manual and their output is never
   committed: reports, logs, profiles and screenshots go to an ignored `tmp/`.
   Only their pure helper units run in a test runner.
@@ -143,16 +153,21 @@ path, the rehearsal, and local/manual fallbacks.
   a skill with missing files. `scripts/github-workflows/check-builds.sh` enforces
   this; do not relax it.
 - The CAD Viewer is `cadgen viewer`: the server is `cadgen.viewer` (Python, in
-  `packages/cadgen`), the React client's source is `apps/viewer/` and its build
+  `packages/cadgen`), the React client's source is `apps/web/` and its build
   ships in the wheel at `cadgen/_runtime/viewer` (built, never committed; a
-  checkout serves `apps/viewer/dist`). The cad-viewer skill is instructions over that verb.
+  checkout serves `apps/web/dist`). The cad-viewer skill is instructions over that verb.
   Nothing in `cadgen.viewer` imports the CAD kernel at module scope — the one
   kernel action, importing a foreign STEP, is a compile job in cadgen's build
   pool, never work the server process does.
-  Keep repo-level tooling in `scripts/`, not under `apps/viewer/`.
-- `packages/cadgen-js` must stay reusable/non-React; app UI and workflow state
-  belong in `apps/viewer/`. It holds the shared CAD render/runtime code: one package,
-  one copy of each shared primitive.
+  Keep repo-level tooling in `scripts/`, not under `apps/web/`.
+- `packages/core` stays non-React. Shared FileViewer/renderers belong in
+  `packages/ui`; host workflow state belongs in apps. Apps never import another
+  app and shared packages never import apps. Root npm workspaces consume compiled
+  package exports; do not add source aliases or nested lockfiles. Preserve app
+  UI/UX and functionality during restructuring; changes are pure refactors.
+- Shared UI must stay platform-agnostic. Apps implement environmental effects;
+  shared features use injected capabilities and named extension slots. Before
+  extending these interfaces, read [the viewer host contract](packages/ui/docs/viewer-host.md).
 - `packages/cadgen` is the whole distribution, not just the Python: artifact
   generation, the CLI parsers behind every skill command (`cadgen/cli`), the warm
   build daemon (`cadgen/daemon`), and
@@ -196,41 +211,17 @@ when touching shared surfaces or before handoff:
 - Focused runners: `scripts/test/test-js.sh`, `scripts/test/test-docs.sh`,
   `scripts/test/test-python.sh`, `scripts/test/test-global.sh`.
   `test-python.sh` takes `--select cadgen|viewer|skills|all` and
-  `--print-weights`; see `scripts/README.md`.
-- In GitHub Actions, `test.yml` runs on pull requests to and pushes of `main`
-  as one job per thing that has to work, each conditional on the changes that
-  can break it. `Publish Release` repeats the same checks on the release commit
-  before the wheel ships. `CONTRIBUTING.md` has the reasoning.
-
-  | job | OS | runs when the diff touches | what |
-  | --- | --- | --- | --- |
-  | Version Check | ubuntu | anything | `VERSION`, derived metadata, skill pins |
-  | cadgen (Linux) | ubuntu | cadgen, cadgen-js, infra | the cadgen package suite, CAD Viewer backend included |
-  | cadgen (Windows) | windows | cadgen, cadgen-js, infra | the same suite: the one thing that must be proven on Windows |
-  | cadgen-js | ubuntu | cadgen-js, infra | `packages/cadgen-js` unit tests |
-  | viewer | ubuntu | viewer, cadgen-js, cadgen, infra | the client's unit tests, then the bundled client through the real backend |
-  | skills | ubuntu | skills, cadgen, cadgen-js, infra | `tests/python/global` policy gates + every skill suite |
-  | docs | ubuntu | docs, skills, cadgen-js, cadgen, infra | the docs site check |
-  | packaging | ubuntu | cadgen, cadgen-js, viewer, infra | bundle from clean, published-tree contract, wheel package data, installed-mode CLIs |
-
-  The classes: `cadgen` = `packages/cadgen/**` + its tests; `cadgen-js` =
-  `packages/cadgen-js/**`; `viewer` = `apps/viewer/**`; `skills` =
-  `skills/**` + the skill and policy tests; `docs` = `apps/docs/**`; `infra` =
-  `scripts/**`, `.github/**`, `VERSION`, plugin manifests, root `package*.json`.
-  A change to cadgen fans out to everything that runs it (the skills, the
-  viewer, the docs, the wheel); a change to the viewer client runs only the
-  viewer and packaging jobs. Prose (root `*.md`, `notes/`, `models/`, `LICENSE`)
-  runs Version Check and nothing else. Markdown under `skills/` and
-  `packages/cadgen/` is NOT prose: `test_documented_commands`,
-  `test_skill_requirements` and `test_package_boundaries` read it.
-
-  All eight job names are `main`'s required checks; a job skipped by its own
-  condition satisfies its check. Adding a job means adding its name there.
+  `--print-weights`; `test-js.sh` takes `--select core|ui|web|all`. See
+  `scripts/README.md`.
+- In GitHub Actions, `test.yml` runs one conditional job per concern. The graph,
+  stable required check names and workspace install recipes are in
+  `CONTRIBUTING.md#ci`. Core changes reach all consumers; UI reaches web; app
+  changes do not run unrelated apps. Manual dispatch runs all jobs.
 - Canonical release version: `scripts/release/check-version.sh`
 - Packaged runtime builds and is complete: `scripts/bundle/bundle.sh --check`
-- CAD Viewer or `packages/cadgen-js`:
-  `npm --prefix packages/cadgen-js test`,
-  `npm --prefix apps/viewer run test`, `npm --prefix apps/viewer run build`.
+- CAD Viewer or shared packages: build exports with `npm run build:packages`,
+  then `npm --prefix packages/core test`, `npm --prefix packages/ui test`,
+  `npm --prefix apps/web run test`, `npm --prefix apps/web run build`.
   The Viewer is two languages and `npm run test` covers only the client — the
   backend's suite is `tests/python/packages/cadgen/viewer`, run by
   `scripts/test/test-python.sh`. Touching `cadgen/viewer/` means running that.
@@ -244,10 +235,10 @@ what a user gets is the wheel the release builds from it.
 
 ## CAD Viewer
 
-The app-facing playbook lives in `apps/viewer/README.md`: launcher contract
+The app-facing playbook lives in `apps/web/README.md`: launcher contract
 (reuse, ports, `--new`), dev vs prod, and the catalog/link-verification
 gotchas. The repo-side half — the lightweight-worktree recipe and
-node_modules linking — lives in `CONTRIBUTING.md` under "Viewer Development
+root workspace dependencies — lives in `CONTRIBUTING.md` under "Viewer Development
 In This Repo". Read them before starting, stopping, or debugging a Viewer.
 Never stop an instance you did not start; packaged-runtime checks go
 through `scripts/bundle/bundle.sh`.

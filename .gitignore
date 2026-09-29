@@ -25,6 +25,8 @@ node_modules
 dist
 coverage
 
+# Playwright's per-run output.
+test-results/
 
 # Temporary files and scratch notes
 *.tmp
