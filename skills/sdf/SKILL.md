@@ -1,6 +1,6 @@
 ---
 name: sdf
-description: SDFormat/SDF model and world authoring, validation, and simulator handoff. Use for `.sdf` files, SDFormat XML, models, worlds, links, joints, poses, frames, inertials, visual/collision geometry, mesh URIs, sensors, lights, physics, plugins, includes, Gazebo, static SDF review, or simulator-specific metadata. Do not use for signed-distance-field geometry.
+description: SDFormat/SDF model and world authoring, validation, and simulator handoff. Use for `.sdf` files, SDFormat XML, models, worlds, links, joints, poses, frames, inertials, visual/collision geometry, mesh URIs, sensors, lights, physics, plugins, includes, Gazebo, static SDF review, or simulator-specific metadata. Do not use for signed-distance-field geometry. Open and visually review existing SDF files in CAD Viewer.
 ---
 
 # SDF
@@ -24,7 +24,7 @@ carries the Python build runtime and the JavaScript it executes. Install it once
 python -m pip install -r requirements.txt
 ```
 
-Rendering additionally needs a browser, which pip cannot supply:
+Snapshots additionally need a browser, which pip cannot supply:
 
 ```bash
 python -m playwright install chromium
@@ -49,9 +49,29 @@ python -m playwright install chromium
 
 Use this skill for SDFormat outputs. Do not use it for signed-distance-field modeling, raw geometry generation, planning semantics, or to paper over incorrect upstream robot/source data unless the task is explicitly simulator-only.
 
-## CAD Viewer Handoff
+## CAD Viewer
 
-After completing SDF work that creates or modifies a `.sdf`, you must ALWAYS hand the explicit file path to `$cad-viewer` when that skill is installed. `$cad-viewer` must start CAD Viewer if it is not already running and return link(s) to the relevant created or updated file(s); if `$cad-viewer` is unavailable or startup fails, report that instead of silently omitting the handoff.
+After creating or updating SDF files, **always run the command below
+and return live links**, even if a viewer is already running. Snapshots and
+validation do not replace this step. Use it also to open existing files.
+
+Run from the directory containing the project’s models, usually `models/`.
+The viewer lists files recursively beneath this directory, so choose it rather
+than an individual artifact’s output folder.
+
+```bash
+cd /absolute/path/to/model-workspace && cadgen viewer --host 127.0.0.1 --json
+```
+
+The launcher starts or reuses the correct instance. Read `url` from its final
+JSON line; never guess the port. Verify each artifact exists under the root,
+then append `?file=<URL-encoded path relative to that root>` to return one link
+per file. For directory review, return the origin alone.
+
+If launching fails, report the failure explicitly.
+
+Review placement, resources and joints. The viewer does not execute simulator
+plugins or validate dynamics; keep simulator checks separate.
 
 ## Workflow
 
@@ -61,7 +81,7 @@ After completing SDF work that creates or modifies a `.sdf`, you must ALWAYS han
 4. Author the XML directly, following the worked examples in `references/examples.md`.
 5. Validate the explicit target with `cadgen sdf validate`; treat bundled validation as a guardrail, not simulator proof.
 6. Run target-consumer smoke tests when available (`references/smoke-tests.md`).
-7. Hand the file to `$cad-viewer`. Static rendering does not execute SDF plugins or read file-authored motion metadata.
+7. Run the [CAD Viewer launch command](#cad-viewer) and return the live link. Static rendering does not execute SDF plugins or read file-authored motion metadata.
 8. Report checks run, checks skipped, and assumptions.
 
 ## Commands
@@ -96,7 +116,7 @@ Checks run:
 - bundled SDF validation: passed
 - gz sdf --check: skipped, gz not installed
 - simulator load: skipped, target simulator unavailable
-- viewer handoff: `$cad-viewer` link returned
+- viewer review: live link returned, or explicit launch failure
 Assumptions:
 - Assumed mesh units are meters.
 - Assumed lidar frame is coincident with lidar_link.

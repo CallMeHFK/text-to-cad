@@ -1,6 +1,6 @@
 ---
 name: srdf
-description: MoveIt2 SRDF authoring, validation, and planning-semantics workflow. Use when creating, editing, inspecting, or validating `.srdf` files, MoveIt planning groups, virtual joints, passive joints, end effectors, group states, disabled collisions, URDF-paired planning semantics, or SRDF handoff for live review. Use the URDF skill for robot structure, the SDF skill for simulator descriptions, and the cad-viewer skill for rendering and live review links.
+description: MoveIt2 SRDF authoring, validation, and planning-semantics workflow. Use when creating, editing, inspecting, or validating `.srdf` files, MoveIt planning groups, virtual joints, passive joints, end effectors, group states, disabled collisions, URDF-paired planning semantics, or SRDF handoff for live review. Use the URDF skill for robot structure and the SDF skill for simulator descriptions. Open and visually review existing SRDF files in CAD Viewer.
 ---
 
 # SRDF
@@ -22,7 +22,7 @@ carries the Python build runtime and the JavaScript it executes. Install it once
 python -m pip install -r requirements.txt
 ```
 
-Rendering additionally needs a browser, which pip cannot supply:
+Snapshots additionally need a browser, which pip cannot supply:
 
 ```bash
 python -m playwright install chromium
@@ -36,9 +36,30 @@ python -m playwright install chromium
 
 Do not place geometry, inertials, joint origins, link poses, mesh references, physical joint limits, transmissions, or `ros2_control` interfaces in SRDF.
 
-## CAD Viewer Handoff
+## CAD Viewer
 
-After completing SRDF work that creates or modifies a `.srdf`, you must ALWAYS hand the explicit file path to `$cad-viewer` when that skill is installed. `$cad-viewer` must start CAD Viewer if it is not already running and return link(s) to the relevant created or updated file(s). If `$cad-viewer` is unavailable or startup fails, report that instead of silently omitting the handoff.
+After creating or updating SRDF files, **always run the command below
+and return live links**, even if a viewer is already running. Snapshots and
+validation do not replace this step. Use it also to open existing files.
+
+Run from the directory containing the project’s models, usually `models/`.
+The viewer lists files recursively beneath this directory, so choose it rather
+than an individual artifact’s output folder.
+
+```bash
+cd /absolute/path/to/model-workspace && cadgen viewer --host 127.0.0.1 --json
+```
+
+The launcher starts or reuses the correct instance. Read `url` from its final
+JSON line; never guess the port. Verify each artifact exists under the root,
+then append `?file=<URL-encoded path relative to that root>` to return one link
+per file. For directory review, return the origin alone.
+
+If launching fails, report the failure explicitly.
+
+Keep the SRDF beside its uniquely matching URDF (same robot name). Review
+planning groups, named states and joints; visual review does not prove planning
+correctness.
 
 ## Required workflow
 

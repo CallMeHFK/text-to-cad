@@ -1,6 +1,6 @@
 ---
 name: dxf
-description: Generate, regenerate, and validate 2D DXF drawings from Python build123d sources. Use for DXF files, `.py` drawing scripts, @dxf models, 2D profiles, outlines, templates, gaskets, panels, flat patterns, laser/plasma/waterjet cut layouts, and 2D drawing exports of CAD geometry.
+description: Generate, regenerate, and validate 2D DXF drawings from Python build123d sources. Use for DXF files, `.py` drawing scripts, @dxf models, 2D profiles, outlines, templates, gaskets, panels, flat patterns, laser/plasma/waterjet cut layouts, and 2D drawing exports of CAD geometry. Open and visually review existing DXF files in CAD Viewer.
 ---
 
 # DXF generation and validation
@@ -277,7 +277,7 @@ is rendered; a job's `output.renderScale` and `output.transparent` still apply.
 
 No CLI inspects an existing `.dxf`. For entity/layer checks read it with `ezdxf`
 directly (it arrives with build123d), and `validate_dxf_file` for the drawing checks;
-review geometry visually with `$cad-viewer`.
+review geometry visually in CAD Viewer (see [Viewer integration](#viewer-integration)).
 
 ## Workflow
 
@@ -295,14 +295,27 @@ python path/to/source.py --force
 
 ## Viewer integration
 
-The CAD Viewer catalogs `.dxf` files only (artifacts, never scripts) and is a static
-visualization tool: it draws the `.dxf` that exists on disk — a straight 2D render of
-the sheet, with no 3D view — and never runs a script. A drawing with no `.dxf` yet
-simply does not appear until its script has been run; regenerating after edits is
-likewise the script's job. A DXF pane has no tools, no toolbar and no sidebar: a
-drawing is a finished 2D document, so the pane pans, zooms and fits, and nothing else.
-There is no in-viewer export. An imported `.dxf` renders directly with no artifact
-management.
+After creating or updating DXF drawings, **always run the command below
+and return live links**, even if a viewer is already running. Snapshots and
+validation do not replace this step. Use it also to open existing files.
+
+Run from the directory containing the project’s models, usually `models/`.
+The viewer lists files recursively beneath this directory, so choose it rather
+than an individual artifact’s output folder.
+
+```bash
+cd /absolute/path/to/model-workspace && cadgen viewer --host 127.0.0.1 --json
+```
+
+The launcher starts or reuses the correct instance. Read `url` from its final
+JSON line; never guess the port. Verify each artifact exists under the root,
+then append `?file=<URL-encoded path relative to that root>` to return one link
+per file. For directory review, return the origin alone.
+
+If launching fails, report the failure explicitly.
+
+The viewer renders saved DXF files as read-only 2D drawings; it never runs
+generation scripts. Drag to pan, wheel/pinch to zoom, double-click to fit.
 
 ## Validation
 
@@ -342,10 +355,8 @@ Report only checks that actually ran.
 
 ## Handoff
 
-After creating or modifying DXF drawings, you must ALWAYS hand the explicit `.dxf`
-file path(s) to `$cad-viewer` when that skill is installed and include its live
-viewer link(s) in the final response. If `$cad-viewer` is unavailable or startup fails, report
-that and rely on `ezdxf` checks instead of silently omitting the handoff.
+Run the mandatory launch step in [Viewer integration](#viewer-integration)
+and include the resulting live links. Report any launch failure explicitly.
 
 Final responses should include generated files, returned viewer links, validation
 actually run, and assumptions.

@@ -1,6 +1,6 @@
 ---
 name: cad
-description: Create/edit parametric CAD models, organize CAD projects, export STEP/STL/3MF/GLB files, resolve prompt references, and measure geometry with cadgen.
+description: Create/edit parametric CAD models, organize CAD projects, export STEP/STL/3MF/GLB files, resolve prompt references, and measure geometry with cadgen. Open and visually review existing STEP/STP, STL, 3MF and GLB files in CAD Viewer.
 ---
 
 # CAD modeling and inspection
@@ -20,6 +20,7 @@ Read only the references needed for the request.
 | **Resolve a reference from a prompt** | Identify its saved STEP/STP document, open it with `read_scene`, and call `scene.resolve(ref)` as shown below. | [Reference syntax and inspection](references/inspection-and-validation.md#reference-syntax) |
 | **Measure or check geometry** | Write a Python check using native build123d geometry and, where useful, `cadgen.geometry`. | [Inspection and validation](references/inspection-and-validation.md) |
 | **Model from an image or drawing** | Extract the specified dimensions and record meaningful assumptions. | [Interpreting the request](references/cad-brief.md) |
+| **Open an existing STEP/STP, STL, 3MF or GLB** | Launch CAD Viewer and return a live link. | [CAD Viewer](#cad-viewer) |
 | **Review appearance or motion** | Snapshot the saved document; use declared kinematics or animation for poses and clips. | [Snapshots](references/snapshot-review.md), [kinematics](references/kinematics.md) |
 | **Diagnose a failure** | Read the error and check the relevant model, geometry or command contract. | [Repair loop](references/repair-loop.md), [version migration](references/migrations.md) |
 | **A message says to migrate** | Do the migration now; an unmigrated model silently loses kinematics, materials and animation. | [Version migration](references/migrations.md) |
@@ -30,7 +31,7 @@ Use the corresponding robot-description skill for URDF, SRDF or SDF.
 ## Setup and paths
 
 Install this skill's `requirements.txt` with the active project interpreter.
-Rendering also needs Chromium:
+Snapshots also need Chromium:
 
 ```bash
 python -m pip install -r /path/to/installed/cad/requirements.txt
@@ -163,9 +164,31 @@ geometric evidence. `cadgen store why <model>.py` explains unexpected rebuilds;
 `python <model>.py --force` forces one model, and `cadgen daemon status` shows
 build progress. More diagnostics are in the [model contract](references/step-generation.md).
 
-For created or modified STEP/STP, STL, 3MF and GLB files, hand their explicit
-paths to `$cad-viewer` when installed and include its returned live links.
-If unavailable or startup fails, report that and use geometry checks and
-snapshots. Include output files, reviewed PNGs, checks actually run, and
-material assumptions or limitations in the final response. Explain any snapshot
-skip or failure using the cases in the snapshot reference.
+Include output files, reviewed PNGs, checks actually run, and material
+assumptions or limitations in the final response. Explain any snapshot skip or
+failure using the cases in the snapshot reference.
+
+### CAD Viewer
+
+After creating or updating STEP/STP, STL, 3MF or GLB files, **always run the command below
+and return live links**, even if a viewer is already running. Snapshots and
+validation do not replace this step. Use it also to open existing files.
+
+Run from the directory containing the project’s models, usually `models/`.
+The viewer lists files recursively beneath this directory, so choose it rather
+than an individual artifact’s output folder.
+
+```bash
+cd /absolute/path/to/model-workspace && cadgen viewer --host 127.0.0.1 --json
+```
+
+The launcher starts or reuses the correct instance. Read `url` from its final
+JSON line; never guess the port. Verify each artifact exists under the root,
+then append `?file=<URL-encoded path relative to that root>` to return one link
+per file. For directory review, return the origin alone.
+
+If launching fails, report the failure explicitly.
+
+Generate changed artifacts first: the viewer never runs model scripts. Existing
+STEP files compile on open when needed. Topology selection and measurement
+require STEP; meshes support visual review.

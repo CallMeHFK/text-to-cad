@@ -67,49 +67,59 @@ public/hero/     # showcase tree view + sidecar, plain files (never LFS)
 scripts/         # asset checks
 ```
 
-## Icon
+## Brand and loading icon
 
-The `/icon` route contains the animated 3D mark, with play/pause, a speed
-slider, five palettes (Blue, Silver, Graphite, Gold and Violet), and PNG/GLB
-downloads. Drag to rotate and scroll to zoom. It starts paused when reduced
-motion is preferred. The header, browser favicon, shortcut icon and Apple
-icon use the static blue mark, without hover animation.
+The header uses the blue CAD wordmark and favicons use C, both with soft relief shading. The homepage
+and repository README use the TEXT2CAD PNG. `/icon` provides downloadable
+C, CAD and TEXT2CAD SVGs and PNGs, followed by the original animated loading-icon
+playground. The original mesh, animation and the shared UI loading assets stay
+unchanged.
 
-Everything for the icon lives in this app:
+The vectors live in `public/brand/`. Regenerate them and the viewer's static
+copy from the repository root with `node scripts/brand/generate-logos.mjs`.
+See [the brand recipe](../../scripts/brand/README.md) for the block grid,
+projection, palette and favicon export. These are checked-in assets; ordinary
+builds do not regenerate them.
+
+The loading-icon playground retains play/pause, speed, five palettes, drag to
+rotate, zoom, and PNG/GLB downloads. It starts paused for reduced motion.
+Its source remains here:
 
 - `src/lib/icon/model.mjs`: the Three.js mesh and animation generator.
-- `src/lib/icon/stage.mjs`: shared camera, palettes and studio lighting.
-- `src/components/icon-playground.tsx`: the interactive preview and PNG render.
-- `scripts/icon/`: GLB export, geometry/animation verification and favicon bake.
-- `public/icon/icon.glb`: generated before `npm run dev` and `npm run build`,
-  ignored by Git. The deployed asset needs neither Git LFS nor `models/`.
+- `src/lib/icon/stage.mjs`: camera, palettes and studio lighting.
+- `src/components/icon-playground.tsx`: preview and PNG render.
+- `scripts/icon/`: GLB export and geometry/animation verification.
+- `public/icon/icon.glb`: generated before dev/build, ignored by Git.
 
-The mesh has an icosahedral hub and twenty triangular prongs. Every root
-shares the hub's exact face perimeter, including in the contracted pose.
-The crowns translate rigidly as their trunks grow and retract in unison.
-One GLB clip includes ten contraction cycles and a complete 360° orbit.
-At the default 4× playback, a contraction takes 2 seconds and the orbit takes
-20 seconds. The fully expanded reference orientation is stored in the GLB.
+The mesh has an icosahedral hub and twenty triangular prongs with flush roots
+and rigid crowns. The GLB carries ten contraction cycles and a complete orbit;
+at 4× playback these take two seconds and twenty seconds respectively.
 
 ```bash
 npm --prefix apps/docs run icon:generate
 npm --prefix apps/docs run icon:verify
 ```
 
-`npm run check` also generates and verifies the GLB. Verification reloads
-the exported file and checks closed meshes, face winding, flush roots, rigid
-crowns, contraction endpoints and the full orbit loop.
+`npm run check` also generates and verifies the GLB, checking closed meshes,
+face winding, flush roots, rigid crowns, endpoints and the orbit loop.
 
-To refresh both static favicons after editing the model or lighting:
+## Visual system
 
-1. Start the docs app and open `/icon`.
-2. Download **Blue PNG**. This always renders the fully expanded reference
-   pose at 512 × 512 with transparency, regardless of the preview controls.
-3. Bake the PNG and multi-size ICO together (requires Pillow):
-
-   ```bash
-   python apps/docs/scripts/icon/bake-favicon.py /path/to/icon-blue.png
-   ```
-
-Commit both favicon files with the source changes. The PNG renderer runs in
-the browser; the hosted page has no filesystem write endpoint.
+The site uses shadcn's neutral light surfaces and the viewer's charcoal dark
+surfaces, system sans-serif type, and the same 0.625rem radius scale. Blue primary
+actions use muted shades of the logo's pastel blue through shadcn semantic
+tokens: #2c7197 in light mode and #30779d in dark mode, with #f5fbff labels.
+Text contrast is 5.14:1 and 4.73:1 respectively; the solid darker hover shades
+also exceed 4.5:1. Focus rings use a deeper brand blue on white and the logo's
+pale highlight on charcoal. All installation Copy buttons use the same blue
+primary action style. Install uses the same heading scale as Skills. The header lists Install, Skills
+and Plugins, with Install active by default and the active link following the
+visible section. Install has one Skills CLI command; Plugins contains only
+provider-native installation commands and guidance. Install boxes and explanatory text fill the content width.
+Command text remains monospace. The unboxed wordmark and one prominent tagline
+sit above the independently framed CAD demo. “100% open source and free.” follows
+“Give your agent CAD superpowers.” in blue, using a lighter brand shade on dark
+surfaces. The app owns
+its tokens and primitives in `src/app/globals.css` and `src/components/ui/`,
+without importing another app or the CAD UI package. Keep the palette aligned
+with `packages/ui/src/styles/tokens.css` when the viewer's base theme changes.
