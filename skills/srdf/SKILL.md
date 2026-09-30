@@ -1,6 +1,6 @@
 ---
 name: srdf
-description: MoveIt2 SRDF authoring, validation, and planning-semantics workflow. Use when creating, editing, inspecting, or validating `.srdf` files, MoveIt planning groups, virtual joints, passive joints, end effectors, group states, disabled collisions, URDF-paired planning semantics, or SRDF handoff for live review. Use the URDF skill for robot structure, the SDF skill for simulator descriptions, and the cad-viewer skill for rendering and live review links.
+description: MoveIt2 SRDF authoring, validation, and planning-semantics workflow. Use when creating, editing, inspecting, or validating `.srdf` files, MoveIt planning groups, virtual joints, passive joints, end effectors, group states, disabled collisions, URDF-paired planning semantics, or SRDF handoff for live review. Use the URDF skill for robot structure and the SDF skill for simulator descriptions. Open and visually review existing SRDF files in CAD Viewer.
 ---
 
 # SRDF
@@ -22,7 +22,7 @@ carries the Python build runtime and the JavaScript it executes. Install it once
 python -m pip install -r requirements.txt
 ```
 
-Rendering additionally needs a browser, which pip cannot supply:
+Snapshots additionally need a browser, which pip cannot supply:
 
 ```bash
 python -m playwright install chromium
@@ -36,9 +36,30 @@ python -m playwright install chromium
 
 Do not place geometry, inertials, joint origins, link poses, mesh references, physical joint limits, transmissions, or `ros2_control` interfaces in SRDF.
 
-## CAD Viewer Handoff
+## CAD Viewer
 
-After completing SRDF work that creates or modifies a `.srdf`, you must ALWAYS hand the explicit file path to `$cad-viewer` when that skill is installed. `$cad-viewer` must start CAD Viewer if it is not already running and return link(s) to the relevant created or updated file(s). If `$cad-viewer` is unavailable or startup fails, report that instead of silently omitting the handoff.
+After creating or updating SRDF files, **always run the command below
+and return live links**, even if a viewer is already running. Snapshots and
+validation do not replace this step. Use it also to open existing files.
+
+Run from the directory containing the project’s models, usually `models/`.
+The viewer lists files recursively beneath this directory, so choose it rather
+than an individual artifact’s output folder.
+
+```bash
+cd /absolute/path/to/model-workspace && cadgen viewer --host 127.0.0.1 --json
+```
+
+The launcher starts or reuses the correct instance. Read `url` from its final
+JSON line; never guess the port. Verify each artifact exists under the root,
+then append `?file=<URL-encoded path relative to that root>` to return one link
+per file. For directory review, return the origin alone.
+
+If launching fails, report the failure explicitly.
+
+Keep the SRDF beside its uniquely matching URDF (same robot name). Review
+planning groups, named states and joints; visual review does not prove planning
+correctness.
 
 ## Required workflow
 
@@ -89,23 +110,27 @@ the CAD Viewer shows.
 cadgen snapshot path/to/robot.srdf review.png
 ```
 
-Hand it the `.srdf`; it routes by suffix and renders the paired URDF's geometry. Pose the robot with `--joint-values` — `{joint: degrees}` JSON,
-joints you do not name staying at the rest pose (the `"jointValues"` job field is the same
-thing in a packet). Robots are authored in metres and are framed on the robot scene scale
-automatically.
+Hand it the `.srdf`; it routes by suffix and renders the paired URDF's geometry — the same-folder `.urdf` whose `<robot name>` matches, exactly as `cadgen srdf validate` pairs them. No match, or more than one, is refused before anything renders, naming the robot name it looked for and the `.urdf` files it found. Pose the robot with `--joint-values` — `{joint: degrees}` JSON,
+joints you do not name staying where the CAD Viewer opens the robot: each at its default, then
+this SRDF's `home` group state if it declares one (the `"jointValues"` job field is the same
+thing in a packet). The snapshot draws the robot with the viewer's own scene, so it shows what
+the viewer shows, and a link mesh that cannot be loaded fails it rather than leaving the link
+out. Robots are authored in metres and are framed on the robot scene scale automatically.
 
-A normal snapshot uses deterministic light CAD lighting and hides grid and axis guides.
-Pass `--render light` or `--render dark` (or photographic Render JSON or a file path)
-for the shared Render scene. An envelope with no `studio` resolves Light in the CLI.
-Set its camera inside Render JSON; top-level `--camera`, `--display`, and `--joint-values`
-control normal snapshots and cannot be combined with Render. Robot link meshes have no CAD-edge or exploded assembly
-topology, so those display combinations are rejected clearly.
+A normal snapshot uses the Solid preset and Light appearance; omitted groups inherit preset defaults.
+Pass `--display render` for the shared photographic scene. Inline display JSON and
+JSON files use grouped settings such as `lighting`, `background`, and `floor`;
+`appearance` is `light` (default) or `dark`. Projection and focal length belong
+in `display.camera`. Top-level `--camera` and `--joint-values` remain active in every display
+mode. The display modes are `solid` and `render`: `edges`, `clip`, `exploded`, the
+`xray`, `hidden-line` and `wireframe` modes and the `hidden`/`off` surface styles
+describe a STEP model's CAD edges, parts and solids, and are refused by name here.
 
 Link meshes are resolved relative to the description, so they must be present: an
 unhydrated Git LFS pointer fails as "No link mesh loaded for robot". Run
 `git lfs checkout <mesh dir>` first.
 
-An SRDF's geometry comes from the URDF beside it, so it has no snapshot door of its
+An SRDF's geometry comes from its paired URDF, so it has no snapshot door of its
 own; the polymorphic `cadgen snapshot` routes one by suffix. The grammar is
 `cadgen snapshot TARGET [OUT] [flags]`, the same one every format door uses. Use
 `cadgen snapshot --help` for the complete current interface.

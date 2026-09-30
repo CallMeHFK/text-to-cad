@@ -241,7 +241,7 @@ class ExplicitPort(LauncherFixture):
 class AnnounceIsConnectable(LauncherFixture):
     """The printed URL is connectable the instant it appears.
 
-    The cad-viewer skill tells an agent to read the URL the command prints and
+    The CAD skills tell an agent to read the URL the command prints and
     fetch it; the launch smoke test does the same. Both are only sound if the
     announce follows the bind: the socket must be bound and LISTENING (and the
     real app attached) before either the human ``CAD Viewer URL:`` line or the
@@ -620,7 +620,7 @@ class DevelopmentAutoReload(StagedApp):
         self.assertEqual(reused["port"], a["port"])
 
     def test_the_dev_server_backend_comes_back_on_its_ephemeral_port(self) -> None:
-        # Exactly what apps/viewer/vite.config.mjs spawns. Vite reads the port
+        # Exactly what apps/web/vite.config.mjs spawns. Vite reads the port
         # off the announce line ONCE and proxies there for the rest of the
         # session, so a restart that moved would strand the dev server.
         staged = self.stage_app(checkout=True)
@@ -720,7 +720,7 @@ class ApiOnly(LauncherFixture):
         #
         # CADGEN_VIEWER_DIST wins the default-dist resolution, so pointing it
         # at an EMPTY directory makes "no client anywhere" true regardless of
-        # whether this checkout has built apps/viewer. Skipping when the
+        # whether this checkout has built apps/web. Skipping when the
         # developer's own checkout happens to be built would mean skipping in
         # CI too, which builds the client before it runs the tests.
         nowhere = self.make_root()

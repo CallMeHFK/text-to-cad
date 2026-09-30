@@ -1,10 +1,12 @@
 """Policy checks for the repo-root agent plugin package.
 
 The repository root *is* the plugin: `.claude-plugin/plugin.json`,
-`.codex-plugin/plugin.json`, and `.zcode-plugin/plugin.json` sit beside
-`.claude-plugin/marketplace.json` and `.zcode-plugin/marketplace.json`, and
-the plugin's skills are the canonical `skills/` directory rather than a
-generated copy. These checks replace the manifest validation that used to live
+`.codex-plugin/plugin.json`, `.cursor-plugin/plugin.json`, and
+`.zcode-plugin/plugin.json` sit beside `.claude-plugin/marketplace.json` and
+`.zcode-plugin/marketplace.json`, and the plugin's skills are the canonical
+`skills/` directory rather than a generated copy (`.qwenpaw-plugin/` is the
+one exception; `test_qwenpaw_plugin.py` holds its copy in lockstep).
+These checks replace the manifest validation that used to live
 in `scripts/bundle/bundle-plugin.sh` back when the plugin was a subdirectory
 package with its own duplicated `skills/` tree.
 
@@ -26,12 +28,18 @@ MARKETPLACE_NAME = "text-to-cad"
 
 CLAUDE_PLUGIN_PATH = REPO_ROOT / ".claude-plugin" / "plugin.json"
 CODEX_PLUGIN_PATH = REPO_ROOT / ".codex-plugin" / "plugin.json"
+CURSOR_PLUGIN_PATH = REPO_ROOT / ".cursor-plugin" / "plugin.json"
 ZCODE_PLUGIN_PATH = REPO_ROOT / ".zcode-plugin" / "plugin.json"
 MARKETPLACE_PATHS = (
     REPO_ROOT / ".claude-plugin" / "marketplace.json",
     REPO_ROOT / ".zcode-plugin" / "marketplace.json",
 )
-PLUGIN_MANIFEST_PATHS = (CLAUDE_PLUGIN_PATH, CODEX_PLUGIN_PATH, ZCODE_PLUGIN_PATH)
+PLUGIN_MANIFEST_PATHS = (
+    CLAUDE_PLUGIN_PATH,
+    CODEX_PLUGIN_PATH,
+    CURSOR_PLUGIN_PATH,
+    ZCODE_PLUGIN_PATH,
+)
 SKILLS_ROOT = REPO_ROOT / "skills"
 
 # A plugin manifest may point at its skills directory in any of these forms.

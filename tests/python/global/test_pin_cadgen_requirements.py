@@ -69,7 +69,7 @@ class PinScriptPresenceTest(unittest.TestCase):
         self.assertTrue(checked, "no skill requirements name cadgen")
 
     def test_the_viewer_client_has_no_python_requirements(self):
-        # apps/viewer is the CAD Viewer's CLIENT; its backend is cadgen.viewer,
+        # apps/web is the CAD Viewer's CLIENT; its backend is cadgen.viewer,
         # installed by `pip install cadgen`. A requirements.txt here would be a
         # second place to state that dependency, and the pin script would then
         # have to decide whether it is a skill (pin) or an app (floor) -- a
@@ -125,7 +125,7 @@ class PinScriptBehaviourTest(unittest.TestCase):
 
     def test_pins_every_manifest_it_finds(self):
         a = self._write("skills/cad/requirements.txt", f"{UNPINNED}\n")
-        b = self._write("skills/cad-viewer/requirements.txt", f"{UNPINNED}\n")
+        b = self._write("skills/urdf/requirements.txt", f"{UNPINNED}\n")
         c = self._write("skills/dxf/requirements.txt", f"{UNPINNED}\n")
         self._run()
         for path in (a, b, c):

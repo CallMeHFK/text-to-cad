@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cadgen"
-version = "0.6.5"
+version = "0.7.4"
 description = "STEP-first CAD artifact generation runtime: build123d STEP/GLB/topology generation, validation, and inspection for CAD agent skills."
 readme = "README.md"
 license = "MIT"
@@ -29,9 +29,9 @@ classifiers = [
 # ezdxf stopped being a WRITING dependency when @dxf moved to build123d geometry
 # (design/dxf-build123d.md) -- the engine writes through build123d's ExportDXF
 # and no author-facing contract mentions ezdxf. It remains a READING one, which
-# is not going away: cadgen.drawing_render parses a .dxf to render it, and
-# cadgen.drawing_checks parses one to validate it post-hoc. A DXF reader needs a
-# DXF parser. Dropping the declaration would leave those two modules resting on
+# is not going away: cadgen.drawing_payload flattens a .dxf to draw it (for the
+# Viewer's pane and for `cadgen dxf snapshot` alike), and cadgen.drawing_checks
+# parses one to validate it post-hoc. A DXF reader needs a DXF parser. Dropping the declaration would leave those two modules resting on
 # build123d's own dependency list, and they would fail at a user's runtime, not
 # at install, the day that list changes.
 #
@@ -53,6 +53,13 @@ dependencies = [
   # this keeps the optional visualization stack out of every CAD install.
   "cadquery-ocp-novtk>=7.9,<8",
   "ezdxf",
+  # @eng_drawing renders its PDF through ezdxf's drawing add-on, whose
+  # matplotlib backend is the page renderer. The add-on also imports Pillow at
+  # module level and ezdxf declares neither, so a cadgen module would otherwise
+  # import packages cadgen does not depend on -- and the drawing IS the PDF, so
+  # neither is optional.
+  "matplotlib",
+  "pillow",
   "shapely",
 ]
 

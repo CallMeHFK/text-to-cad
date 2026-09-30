@@ -4,16 +4,9 @@
 
 <br>
 
-<pre>
-████████╗███████╗██╗  ██╗████████╗██████╗  ██████╗ █████╗ ██████╗ 
-╚══██╔══╝██╔════╝╚██╗██╔╝╚══██╔══╝╚════██╗██╔════╝██╔══██╗██╔══██╗
-   ██║   █████╗   ╚███╔╝    ██║    █████╔╝██║     ███████║██║  ██║
-   ██║   ██╔══╝   ██╔██╗    ██║   ██╔═══╝ ██║     ██╔══██║██║  ██║
-   ██║   ███████╗██╔╝ ██╗   ██║   ███████╗╚██████╗██║  ██║██████╔╝
-   ╚═╝   ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝ ╚═════╝╚═╝  ╚═╝╚═════╝ 
-</pre>
+<img src="apps/docs/public/brand/logo-text2cad.png" alt="TEXT2CAD" width="800">
 
-A library of agent skills for CAD, CAE and CAM
+Give your agent CAD superpowers.
 
 [Docs](https://www.texttocad.dev)
 
@@ -69,14 +62,15 @@ robot description files, simulation, and local review.
 | Skill        | Summary                                                                                                                                            | Source                                              |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
 | CAD          | Creates and edits CAD models from plain-language or image requests, with STEP as the main output along with options to export to STL, 3MF and GLB. | [skills/cad](skills/cad/SKILL.md)                   |
-| CAD Viewer   | Shows local browser previews for CAD and robot files.                                                                                     | [skills/cad-viewer](skills/cad-viewer/SKILL.md)     |
 | step.parts   | Finds off-the-shelf STEP parts like screws, bearings, motors, and connectors.                                                                      | [skills/step-parts](skills/step-parts/SKILL.md)     |
+| Engineering Drawing | Dimensioned engineering drawings from a part, as a PDF: views, hidden lines, dimensions, hole callouts, title block. | [skills/engineering-drawing](skills/engineering-drawing/SKILL.md) |
 | DXF          | Creates 2D DXF drawings like profiles, templates, gaskets, and cut layouts from Python sources or CAD geometry.                                    | [skills/dxf](skills/dxf/SKILL.md)                   |
 | URDF         | Writes robot structure files with links, joints, limits, inertials, and meshes.                                                                    | [skills/urdf](skills/urdf/SKILL.md)                 |
 | SRDF         | Adds MoveIt planning groups, end effectors, poses, and collision rules to a URDF.                                                                  | [skills/srdf](skills/srdf/SKILL.md)                 |
 | SDF          | Creates simulator models and worlds with frames, physics, sensors, and lights.                                                                     | [skills/sdf](skills/sdf/SKILL.md)                   |
 | SendCutSend  | Checks DXF and STEP files before upload to SendCutSend.                                                                                            | [skills/sendcutsend](skills/sendcutsend/SKILL.md)   |
 | DfAM Check   | Measures mesh printability per process: wall thickness, overhangs, support volume, and build orientation.                                          | [skills/dfam-check](skills/dfam-check/SKILL.md)     |
+| DFM | Reviews a part for sheet metal, CNC machining, or injection molding, with measured evidence and the cited rule behind every finding; measures draft, undercuts and projected area from a mesh. | [skills/dfm](skills/dfm/SKILL.md) |
 | G-code       | Slices supported mesh files into validated, printer-profiled FDM `.gcode` with real slicer CLIs.                                                   | [skills/gcode](skills/gcode/SKILL.md)               |
 | Bambu Labs   | Dry-runs, uploads, and cautiously starts local Bambu Lab print jobs from validated `.gcode`.                                                       | [skills/bambu-labs](skills/bambu-labs/SKILL.md)     |
 
@@ -105,14 +99,18 @@ in your lockfile, so it silently misses new ones — which matters here, because
 releases do add skills.
 
 Neither command removes a skill that was retired upstream; drop one with
-`npx skills remove <skill>` if you need to.
+`npx skills remove <skill>` if you need to. The retired `cad-viewer` skill is
+now covered by the CAD, DXF and robot-description skills; remove old standalone
+installs with `npx skills remove cad-viewer`. For local development symlinks,
+remove the old `cad-viewer` link manually: the install/uninstall scripts discover
+only skills still present in the checkout.
 
 (`npx skills install …` still works — it is an undocumented alias for `add`.)
 
 ### Plugins
 
 Provider-native plugin installs are also available for Codex, Claude Code,
-ZCode, Grok Build, and QwenPaw:
+ZCode, Grok Build, QwenPaw, and Cursor:
 
 ```bash
 # Codex (requires Codex 0.142.0 or newer)
@@ -149,10 +147,34 @@ grok plugin enable cad
 # QwenPaw (clone the repo, then install the plugin directory)
 git clone https://github.com/earthtojake/text-to-cad.git
 qwenpaw plugin install text-to-cad/.qwenpaw-plugin
+# then name the tree in ~/.qwenpaw/config.json and restart
+# ({"plugins": {"cad": {"skills_dir": "~/text-to-cad/skills"}}}; ~ expands)
 ```
 
 The QwenPaw plugin registers the skills as a skill provider: every skill is
-copied into each QwenPaw workspace and enabled by default.
+copied into each QwenPaw workspace and enabled by default. It ships no copy of
+them, so it needs that path (or the generated copy described in
+[`.qwenpaw-plugin/README.md`](.qwenpaw-plugin/README.md)) to know which
+`skills/` tree to provision.
+
+```bash
+# Cursor (clone into Cursor's local plugin directory)
+mkdir -p ~/.cursor/plugins/local
+git clone https://github.com/earthtojake/text-to-cad.git ~/.cursor/plugins/local/cad
+```
+
+Cursor discovers the plugin through `.cursor-plugin/plugin.json` and loads the
+skills from the clone's `skills/` directory; restart Cursor or run
+**Developer: Reload Window** after installing. Clone it into place rather than
+symlinking a checkout you already have: a symlink under
+`~/.cursor/plugins/local` loads only when its target resolves to a directory
+inside that folder, so a link to another path is ignored with no error. The
+directory is named `cad` after the manifest's plugin name, and a marketplace
+install of the same name takes precedence over this local copy. Local imports
+are admin-controlled on Teams/Enterprise plans (**Allow Local Plugin Imports**);
+without them, install through a marketplace instead ([submitting it](https://cursor.com/marketplace/publish)
+for the public one, or adding this repository as a team marketplace under
+Dashboard -> Plugins). Updating the install is a `git pull` in that directory.
 
 Restart your agent if newly installed skills do not appear. For local
 development, branch from `main`, open PRs against `main`, and follow
@@ -160,7 +182,7 @@ development, branch from `main`, open PRs against `main`, and follow
 
 ### Windows 11: Smart App Control
 
-The CAD kernel behind the `cad`, `cad-viewer`, `dxf`, `urdf`, `srdf` and `sdf`
+The CAD kernel behind the `cad`, `dxf`, `urdf`, `srdf` and `sdf`
 skills is `OCP`, OpenCascade's Python binding, and its wheel ships an unsigned
 native module. Windows 11's Smart App Control blocks unsigned native code, so
 on a machine where it is on (the default on a fresh install) every `cadgen`

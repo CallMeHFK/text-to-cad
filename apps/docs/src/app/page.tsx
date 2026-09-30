@@ -30,11 +30,21 @@ const pluginInstallCommands = [
     command: "grok plugin install earthtojake/text-to-cad --trust",
   },
   // QwenPaw has no marketplace resolution over GitHub; its CLI installs a plugin
-  // from a local directory or a ZIP, so the repo is cloned first.
+  // from a local directory or a ZIP, so the repo is cloned first. The plugin
+  // ships no skills copy, so the config names which skills/ tree to provision.
   {
     agent: "QwenPaw",
     command:
-      "git clone https://github.com/earthtojake/text-to-cad.git\nqwenpaw plugin install text-to-cad/.qwenpaw-plugin",
+      "git clone https://github.com/earthtojake/text-to-cad.git\nqwenpaw plugin install text-to-cad/.qwenpaw-plugin\n# then add {\"plugins\":{\"cad\":{\"skills_dir\":\"~/text-to-cad/skills\"}}} to ~/.qwenpaw/config.json and restart",
+  },
+  // Cursor has no CLI install: a local plugin lives in ~/.cursor/plugins/local,
+  // in a directory named after the manifest's plugin name, discovered through
+  // .cursor-plugin/plugin.json. Clone it there rather than linking a checkout
+  // in -- Cursor ignores a symlink whose target sits outside that folder.
+  {
+    agent: "Cursor",
+    command:
+      "mkdir -p ~/.cursor/plugins/local\ngit clone https://github.com/earthtojake/text-to-cad.git ~/.cursor/plugins/local/cad",
   },
 ];
 
@@ -46,15 +56,16 @@ const skillGroups = [
       "Creates and edits CAD models from plain-language or image requests, with STEP as the main output along with options to export to STL, 3MF and GLB.",
   },
   {
-    name: "CAD Viewer",
-    path: "skills/cad-viewer",
-    summary: "Shows local browser previews for CAD and robot files.",
-  },
-  {
     name: "step.parts",
     path: "skills/step-parts",
     summary:
       "Finds off-the-shelf STEP parts like screws, bearings, motors, and connectors.",
+  },
+  {
+    name: "Engineering Drawing",
+    path: "skills/engineering-drawing",
+    summary:
+      "Dimensioned engineering drawings from a part, as a PDF: views, hidden lines, dimensions, hole callouts, title block.",
   },
   {
     name: "DXF",
@@ -92,6 +103,12 @@ const skillGroups = [
       "Measures mesh printability per process: wall thickness, overhangs, support volume, and build orientation.",
   },
   {
+    name: "DFM",
+    path: "skills/dfm",
+    summary:
+      "Reviews a part for sheet metal, CNC machining, or injection molding, with measured evidence and the cited rule behind every finding.",
+  },
+  {
     name: "G-code",
     path: "skills/gcode",
     summary:
@@ -105,11 +122,8 @@ const skillGroups = [
   },
 ];
 
-// Command boxes cap at half the 1200px content shell rather than filling it: a command is a
-// short line, and a full-bleed box puts a lot of empty card to the right of it. A cap, not a
-// width -- a narrow screen still gets the whole column.
 const COMMAND_BOX_CLASS =
-  "min-w-0 max-w-[min(600px,100%)] overflow-hidden border border-border bg-card";
+  "min-w-0 w-full overflow-hidden rounded-lg border border-border bg-card shadow-xs";
 
 function InstallCommand({
   item,
@@ -118,16 +132,17 @@ function InstallCommand({
 }) {
   return (
     <div className={COMMAND_BOX_CLASS}>
-      <div className="border-b border-border px-3 py-2 text-label uppercase tracking-[1.5px] text-muted-foreground">
+      <div className="border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
         {item.agent}
       </div>
       <div className="flex min-h-[54px] min-w-0 max-w-full items-stretch">
-        <code className="flex min-w-0 flex-1 items-center overflow-x-auto whitespace-pre px-3 py-2 text-sm leading-6 text-foreground">
+        <code className="flex min-w-0 flex-1 items-center overflow-x-auto whitespace-pre font-mono px-3 py-2 text-sm leading-6 text-foreground">
           {item.command}
         </code>
         <CopyButton
           text={item.command}
           label={`Copy ${item.agent} install command`}
+          prominent
           compact
         />
       </div>
@@ -145,16 +160,17 @@ function InstallCommands() {
   );
 }
 
-function SkillsInstallCommand() {
+function SkillsInstallCommand({ prominent = false }: { prominent?: boolean }) {
   return (
     <div className={COMMAND_BOX_CLASS}>
       <div className="flex min-h-[54px] min-w-0 max-w-full items-stretch">
-        <code className="flex min-w-0 flex-1 items-center overflow-x-auto whitespace-pre px-3 py-2 text-sm leading-6 text-foreground">
+        <code className="flex min-w-0 flex-1 items-center overflow-x-auto whitespace-pre font-mono px-3 py-2 text-sm leading-6 text-foreground">
           {skillsInstallCommand}
         </code>
         <CopyButton
           text={skillsInstallCommand}
           label="Copy Skills CLI install command"
+          prominent={prominent}
           compact
         />
       </div>
@@ -175,11 +191,11 @@ function SectionIntro({
     <div>
       <h2
         id={id}
-        className="text-heading font-medium tracking-normal text-foreground"
+        className="text-heading font-semibold tracking-tight text-foreground"
       >
         {title}
       </h2>
-      <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
+      <p className="mt-2 text-sm leading-6 text-muted-foreground">
         {description}
       </p>
     </div>
@@ -189,7 +205,7 @@ function SectionIntro({
 function SkillLink({ skill }: { skill: (typeof skillGroups)[number] }) {
   return (
     <a
-      className="inline-flex min-w-0 items-center gap-1.5 text-label uppercase tracking-[1.5px] text-primary transition hover:text-primary/80"
+      className="inline-flex min-w-0 items-center gap-1.5 font-mono text-xs text-muted-foreground transition hover:text-foreground"
       href={`https://github.com/earthtojake/text-to-cad/blob/main/${skill.path}/SKILL.md`}
       target="_blank"
       rel="noreferrer"
@@ -205,16 +221,16 @@ export default function Home() {
     <main className="min-h-screen bg-background text-foreground">
       <SiteHeader />
 
-      <div className="mx-auto w-full max-w-[1200px] px-4 py-4 sm:px-6">
+      <div className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6">
         <div className="min-w-0 space-y-2">
           <HeroSection />
 
-          <section aria-label="Install text-to-cad" className="py-6">
-            <div className="max-w-3xl space-y-3">
-              <h2 className="text-sm font-medium uppercase tracking-[1.5px] text-foreground">
-                Try It Now
+          <section id="installation" aria-labelledby="installation-title" className="scroll-mt-20 py-6">
+            <div className="w-full space-y-3">
+              <h2 id="installation-title" className="text-heading font-semibold tracking-tight text-foreground">
+                Install
               </h2>
-              <SkillsInstallCommand />
+              <SkillsInstallCommand prominent />
             </div>
           </section>
 
@@ -225,28 +241,28 @@ export default function Home() {
           >
             <SectionIntro
               id="skills-title"
-              title="SKILLS"
+              title="Skills"
               description="Install the library to give agents focused workflows for CAD, fabrication, robot description files, simulation, and local review."
             />
 
-            <div className="border border-border bg-card">
-              <div className="grid grid-cols-[minmax(0,1fr)] border-b border-border px-3.5 py-2.5 text-xs uppercase tracking-[1.5px] text-muted-foreground md:grid-cols-[minmax(9rem,12rem)_minmax(0,1fr)_max-content] md:gap-5 md:pl-0 md:pr-3.5">
-                <span className="md:pl-3.5">skill</span>
-                <span className="hidden md:block">summary</span>
-                <span className="hidden text-right md:block">source</span>
+            <div className="overflow-hidden rounded-xl border border-border bg-card">
+              <div className="grid grid-cols-[minmax(0,1fr)] border-b border-border px-3.5 py-2.5 text-xs font-medium text-muted-foreground md:grid-cols-[minmax(9rem,12rem)_minmax(0,1fr)_max-content] md:gap-5 md:pl-0 md:pr-3.5">
+                <span className="md:pl-3.5">Skill</span>
+                <span className="hidden md:block">Summary</span>
+                <span className="hidden text-right md:block">Source</span>
               </div>
               <ul className="divide-y divide-border">
                 {skillGroups.map((skill) => (
                   <li
                     key={skill.name}
-                    className="card-glow grid gap-3 px-3.5 py-3 hover:bg-secondary/60 md:grid-cols-[minmax(9rem,12rem)_minmax(0,1fr)_max-content] md:items-center md:gap-5 md:pl-0 md:pr-3.5"
+                    className="grid transition-colors gap-3 px-3.5 py-3 hover:bg-secondary/60 md:grid-cols-[minmax(9rem,12rem)_minmax(0,1fr)_max-content] md:items-center md:gap-5 md:pl-0 md:pr-3.5"
                   >
                     <div className="flex min-w-0 items-center md:pl-3.5">
                       <div className="min-w-0">
                         <h3 className="text-sm font-medium text-foreground">
                           {skill.name}
                         </h3>
-                        <p className="mt-0.5 text-label uppercase tracking-wider text-muted-foreground md:hidden">
+                        <p className="mt-0.5 text-xs font-mono text-muted-foreground md:hidden">
                           {skill.path}
                         </p>
                       </div>
@@ -264,54 +280,20 @@ export default function Home() {
           </section>
 
           <section
-            id="installation"
-            aria-labelledby="installation-title"
+            id="plugins"
+            aria-labelledby="plugins-title"
             className="scroll-mt-20 space-y-3 py-6"
           >
             <SectionIntro
-              id="installation-title"
-              title="INSTALL"
-              description="Install text-to-cad with the Skills CLI. Provider-native plugin installs are available as a secondary path."
+              id="plugins-title"
+              title="Plugins"
+              description="Provider-native plugins are an alternative to installing with the Skills CLI."
             />
-
-            <div className="max-w-3xl space-y-3">
-              <SkillsInstallCommand />
-              <p className="text-sm leading-6 text-muted-foreground">
-                <span className="text-foreground">Run the same command to update.</span>{" "}
-                <code className="text-foreground">add</code> re-fetches the package and
-                overwrites what is installed, so it refreshes existing skills and picks up any
-                skill added in a newer release.{" "}
-                <code className="text-foreground">npx skills update</code> only walks your
-                lockfile, so it silently misses new ones. Neither removes a skill that was
-                retired upstream — drop one with{" "}
-                <code className="text-foreground">npx skills remove &lt;skill&gt;</code>.
-              </p>
-              <div className="pt-3">
-                <h3 className="mb-3 text-sm font-medium uppercase tracking-[1.5px] text-foreground">
-                  Plugin Installs
-                </h3>
-                <InstallCommands />
-              </div>
-              <p className="text-sm leading-6 text-muted-foreground">
-                Skills CLI installation is preferred for regular use. Restart
-                your agent if newly installed skills do not appear. The Codex
-                plugin install requires Codex 0.142.0 or newer; older versions
-                skip the plugin silently.
-              </p>
-              <p className="text-sm leading-6 text-muted-foreground">
-                Local development symlink guidance lives in{" "}
-                <a
-                  className="inline-flex items-center gap-1 text-primary transition hover:text-primary/80"
-                  href="https://github.com/earthtojake/text-to-cad/blob/main/CONTRIBUTING.md"
-                  rel="noreferrer"
-                  target="_blank"
-                >
-                  CONTRIBUTING.md
-                  <ExternalLink className="size-3" aria-hidden="true" />
-                </a>
-                .
-              </p>
-            </div>
+            <InstallCommands />
+            <p className="text-sm leading-6 text-muted-foreground">
+              Restart your agent if newly installed skills do not appear. The Codex
+              plugin requires Codex 0.142.0 or newer; older versions skip it silently.
+            </p>
           </section>
         </div>
       </div>

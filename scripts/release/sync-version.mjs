@@ -10,21 +10,11 @@ const canonicalVersionPath = "VERSION";
 const semverPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 export const jsonTargets = [
-  { path: "apps/docs/package.json", fields: [["version"]] },
-  { path: "apps/docs/package-lock.json", fields: [["version"], ["packages", "", "version"]] },
-  { path: "packages/cadgen-js/package.json", fields: [["version"]] },
-  { path: "packages/cadgen-js/package-lock.json", fields: [["version"], ["packages", "", "version"]] },
-  { path: "apps/viewer/package.json", fields: [["version"]] },
-  {
-    path: "apps/viewer/package-lock.json",
-    fields: [
-      ["version"],
-      ["packages", "", "version"],
-      ["packages", "../../packages/cadgen-js", "version"],
-    ],
-  },
+  ...["package.json", "apps/docs/package.json", "packages/core/package.json", "packages/ui/package.json", "apps/web/package.json"].map(path => ({ path, fields: [["version"]] })),
+  { path: "package-lock.json", fields: [["version"], ["packages", "", "version"], ...["apps/docs", "apps/web", "packages/core", "packages/ui"].map(name => ["packages", name, "version"])] },
   { path: ".claude-plugin/plugin.json", fields: [["version"]] },
   { path: ".codex-plugin/plugin.json", fields: [["version"]] },
+  { path: ".cursor-plugin/plugin.json", fields: [["version"]] },
   { path: ".qwenpaw-plugin/plugin.json", fields: [["version"]] },
   { path: ".zcode-plugin/plugin.json", fields: [["version"]] },
   { path: ".claude-plugin/marketplace.json", fields: [["version"]], pluginEntries: ["cad"] },
@@ -190,7 +180,7 @@ function syncTomlTarget(relativePath, version) {
  * happens, so two of them stamping it means the last write wins -- and when the mirror declares
  * FEWER fields than the canonical target, the field only the canonical one knows about is
  * silently reverted. That is how the 0.4.10 release gate came to reject its own bump:
- * `packages/cadgen-js/package-lock.json` was stamped with a package version and then
+ * The former per-package lockfile was stamped with a package version and then
  * overwritten through its own symlink, which did not carry that field.
  */
 export function mergeTargetsByRealPath(targets) {

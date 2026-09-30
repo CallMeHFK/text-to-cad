@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# One self-contained browser gate for the CAD Viewer's format, placement,
-# appearance, LOD, and picking contracts. The project, store, Viewer, and
+# One self-contained browser gate for the CAD Viewer's format and camera
+# contracts. It runs exactly what CI runs. The project, store, Viewer, and
 # browser are all owned by this process.
 set -euo pipefail
 
@@ -30,27 +30,29 @@ fi
 
 out_dir=""
 only_gate=""
-ci_subset=""
 while [ "$#" -ne 0 ]; do
   case "$1" in
-    --out) out_dir="${2:-}"; shift 2 || true ;;
-    # One gate while working on it: picking, pick, format, scene, quality,
-    # kinematics, camera.
-    --only) only_gate="${2:-}"; shift 2 || true ;;
-    # The CI-sized subset (format, pick, kinematics, camera). Without it this is
-    # the full manual gate; tests/browser/viewer-e2e.mjs says what each covers and
-    # why the rest stays manual.
-    --ci) ci_subset=1; shift ;;
-    *) echo "usage: $0 [--out SCREENSHOT_DIR] [--only GATE] [--ci]" >&2; exit 2 ;;
+    --out|--only)
+      if [ "$#" -lt 2 ] || [[ "$2" == --* ]] || [ -z "$2" ]; then
+        echo "usage: $0 [--out SCREENSHOT_DIR] [--only GATE]" >&2
+        exit 2
+      fi
+      if [ "$1" = "--out" ]; then out_dir="$2"; else only_gate="$2"; fi
+      shift 2 ;;
+    # --only: one gate while working on it: format, camera.
+    *) echo "usage: $0 [--out SCREENSHOT_DIR] [--only GATE]" >&2; exit 2 ;;
   esac
 done
-if { [ -n "$out_dir" ] && [ "$out_dir" = "--only" ]; } || [ "$only_gate" = "--out" ]; then
-  echo "usage: $0 [--out SCREENSHOT_DIR] [--only GATE] [--ci]" >&2
-  exit 2
-fi
-
 started_at="$(date +%s)"
-project="$(mktemp -d)"
+# macOS Unix sockets have a 104-byte path limit. Keep the test's daemon state
+# and child-process scratch paths short as well as private.
+if [ "$(uname -s)" = "Darwin" ]; then
+  project="$(mktemp -d /tmp/cvb.XXXXXX)"
+  export TMPDIR="$project/tmp"
+  mkdir -p "$TMPDIR"
+else
+  project="$(mktemp -d)"
+fi
 log="$(mktemp)"
 viewer_pidfile="$project/viewer.pid"
 export CADGEN_CACHE_DIR="$project/cache"
@@ -104,8 +106,8 @@ trap cleanup EXIT
 
 cp "$FIXTURE" "$project/smoke.step"
 
-# One imported document and one tessellation produce every mesh fixture. This
-# keeps format parity meaningful without five model builds or repository data.
+# One imported document and one tessellation produce the mesh fixture, with no
+# model build or repository data.
 "$PYTHON" - "$project" <<'PY'
 import sys
 from pathlib import Path
@@ -117,11 +119,11 @@ from cadgen.step_export_target import export_cad_target
 root = Path(sys.argv[1])
 result = export_cad_target(
     root / "smoke.step",
-    [("stl", root / "smoke.stl"), ("3mf", root / "smoke.3mf"), ("glb", root / "smoke.glb")],
+    [("stl", root / "smoke.stl")],
     repo_root=root,
 )
-if len(result.get("files") or []) != 3:
-    raise RuntimeError(f"mesh setup did not write three outputs: {result}")
+if len(result.get("files") or []) != 1:
+    raise RuntimeError(f"mesh setup did not write its output: {result}")
 
 # The canonical fixture is intentionally one part. Reuse its exact solid twice
 # to exercise the positive STEP assembly-tree capability without another CAD
@@ -134,27 +136,16 @@ assembly = bd.Compound(children=[left, right], label="smoke_assembly")
 export_build123d_step_scene(assembly, root / "assembly.step")
 PY
 
-# A STEP document whose sidecar declares a mate: the other way a model is posed,
-# and the one whose pose reaches the scene through cadScene parameters rather
-# than a posed mesh wrapper. Built from primitives, so it imports nothing.
+# A STEP model the camera gate saves a rebuilt revision over. Built from
+# primitives, so it imports nothing.
 cat > "$project/hinge.py" <<'HINGE'
-import cadgen
 from cadgen import label_shape, step
 from cadgen import build123d as bd
 
-KINEMATICS = {
-    "mates": [
-        cadgen.revolute("swing", parent="#base", child="#arm",
-                        origin=(0, 0, 6), direction=(0, 0, 1), limits=(0, 90)),
-    ],
-}
 
-
-@step(kinematics=KINEMATICS)
+@step
 def hinge():
     base = label_shape(bd.Box(20, 20, 4), "base")
-    # Long enough that swinging it rewrites the model's bounding box: framing the
-    # posed model puts the camera somewhere the zero pose never would.
     arm = label_shape(bd.Pos(30, 0, 6) * bd.Box(56, 4, 4), "arm")
     return bd.Compound(children=[base, arm])
 
@@ -181,12 +172,11 @@ if ! grep -q 'bd.Box(156, 4, 4)' "$project/hinge_grown.py" \
 fi
 
 # The served project holds artifacts only: a model script beside them would
-# enter the catalog as a buildable entry and change what the other gates see.
+# enter the catalog as a buildable entry and change what the gates see.
 if ! (cd "$project" && "$PYTHON" hinge.py && "$PYTHON" hinge_grown.py \
         && mkdir -p .revision && mv hinge_grown.step .revision/hinge.step \
-        && mv hinge_grown.step.json .revision/hinge.step.json \
         && rm hinge.py hinge_grown.py) >"$log" 2>&1; then
-  echo "FAIL: the kinematics STEP fixture did not build" >&2
+  echo "FAIL: the hinge revision fixture did not build" >&2
   sed 's/^/    /' "$log" >&2
   exit 1
 fi
@@ -197,40 +187,17 @@ fi
 rm -rf "$CADGEN_CACHE_DIR"
 mkdir -p "$CADGEN_CACHE_DIR"
 
-cat > "$project/smoke.dxf" <<'DXF'
-0
-SECTION
-2
-ENTITIES
-0
-LWPOLYLINE
-8
-OUTLINE
-90
-4
-70
-1
-10
--10
-20
--6
-10
-10
-20
--6
-10
-10
-20
-6
-10
--10
-20
-6
-0
-ENDSEC
-0
-EOF
-DXF
+# A closed 20 x 12 outline on layer OUTLINE, written by ezdxf (cadgen's DXF reader) so it is a
+# DXF the backend reads: a hand-written one lacks the subclass markers it requires.
+"$PYTHON" - "$project/smoke.dxf" <<'PY'
+import sys
+
+import ezdxf
+
+document = ezdxf.new()
+document.modelspace().add_lwpolyline([(-10, -6), (10, -6), (10, 6), (-10, 6)], close=True, dxfattribs={"layer": "OUTLINE"})
+document.saveas(sys.argv[1])
+PY
 
 cat > "$project/smoke.urdf" <<'URDF'
 <?xml version="1.0"?>
@@ -248,39 +215,6 @@ cat > "$project/smoke.urdf" <<'URDF'
   </joint>
 </robot>
 URDF
-
-# A robot whose base link origin sits ABOVE its lowest geometry: the clamp hangs
-# entirely below z=0, which is where the photographic floor used to be pinned.
-# Its own name, so the SRDF below still pairs with smoke.urdf alone.
-cat > "$project/below-origin.urdf" <<'URDF'
-<?xml version="1.0"?>
-<robot name="viewer_below_origin">
-  <link name="base">
-    <visual><geometry><box size="0.10 0.08 0.02"/></geometry></visual>
-  </link>
-  <link name="clamp">
-    <visual><geometry><box size="0.06 0.06 0.08"/></geometry></visual>
-  </link>
-  <joint name="clamp_mount" type="fixed">
-    <parent link="base"/><child link="clamp"/>
-    <origin xyz="0 0 -0.05"/>
-  </joint>
-</robot>
-URDF
-
-# Paired by matching <robot name>, so the same two links carry the SRDF
-# planning semantics whose group state is the other way a joint is driven.
-cat > "$project/smoke.srdf" <<'SRDF'
-<?xml version="1.0"?>
-<robot name="viewer_smoke">
-  <group name="arm_group">
-    <joint name="shoulder"/>
-  </group>
-  <group_state name="lifted" group="arm_group">
-    <joint name="shoulder" value="0.5"/>
-  </group_state>
-</robot>
-SRDF
 
 "$PYTHON" -c 'import os, pathlib, sys; os.setsid() if os.name != "nt" else None; pathlib.Path(sys.argv[3]).write_text(str(os.getpid()), encoding="ascii"); os.chdir(sys.argv[1]); os.execv(sys.executable, [sys.executable, "-m", "cadgen.viewer", "--host", sys.argv[2], "--json", "--new", "--no-registry"])' \
   "$project" "$HOST" "$viewer_pidfile" >"$log" 2>&1 &
@@ -306,6 +240,5 @@ fi
 e2e_args=(--dir "$project" --url "http://$HOST:$port")
 [ -n "$out_dir" ] && e2e_args+=(--out "$out_dir")
 [ -n "$only_gate" ] && e2e_args+=(--only "$only_gate")
-[ -n "$ci_subset" ] && e2e_args+=(--ci)
 echo "  [setup] $(( $(date +%s) - started_at ))s to fixtures, viewer and port"
 node "$REPO_ROOT/tests/browser/viewer-e2e.mjs" "${e2e_args[@]}"

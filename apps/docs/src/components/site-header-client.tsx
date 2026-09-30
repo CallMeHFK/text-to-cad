@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
@@ -9,6 +10,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+
+const NAV_SECTIONS = [
+  { id: "installation", label: "Install" },
+  { id: "skills", label: "Skills" },
+  { id: "plugins", label: "Plugins" },
+] as const;
 
 const GITHUB_REPO_URL = "https://github.com/earthtojake/text-to-cad";
 
@@ -53,7 +60,7 @@ function VersionLink({ version }: { version: string }) {
 
   return (
     <a
-      className="hidden px-2.5 py-1.5 text-ui text-muted-foreground transition hover:bg-secondary hover:text-foreground md:inline-flex"
+      className="hidden rounded-md px-2.5 py-1.5 text-ui text-muted-foreground transition hover:bg-secondary hover:text-foreground md:inline-flex"
       href={`${GITHUB_REPO_URL}/releases`}
       target="_blank"
       rel="noreferrer"
@@ -74,6 +81,42 @@ export function SiteHeaderClient({
   discordUrl: string;
   version: string;
 }) {
+  const [activeSection, setActiveSection] = useState<string>("installation");
+
+  useEffect(() => {
+    let frame = 0;
+    const updateActiveSection = () => {
+      frame = 0;
+      const sections = NAV_SECTIONS.map(({ id }) => document.getElementById(id));
+      if (!sections.some(Boolean)) {
+        setActiveSection("");
+        return;
+      }
+      let active = "installation";
+      for (const section of sections) {
+        if (section && section.getBoundingClientRect().top <= 96) {
+          active = section.id;
+        }
+      }
+      // The final section may not be tall enough to reach the header.
+      if (window.scrollY > 0 && window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) {
+        active = "plugins";
+      }
+      setActiveSection(active);
+    };
+    const scheduleUpdate = () => {
+      if (!frame) frame = window.requestAnimationFrame(updateActiveSection);
+    };
+    updateActiveSection();
+    window.addEventListener("scroll", scheduleUpdate, { passive: true });
+    window.addEventListener("resize", scheduleUpdate);
+    return () => {
+      window.removeEventListener("scroll", scheduleUpdate);
+      window.removeEventListener("resize", scheduleUpdate);
+      window.cancelAnimationFrame(frame);
+    };
+  }, []);
+
   const githubLabel =
     githubStars === null
       ? "Open text-to-cad on GitHub"
@@ -86,49 +129,45 @@ export function SiteHeaderClient({
       <div className="mx-auto flex h-full w-full max-w-[1200px] items-center gap-3 px-4 sm:px-6">
         <Link
           href="/"
-          className="flex min-w-0 items-center gap-2 text-foreground transition hover:text-primary"
+          aria-label="text-to-cad home"
+          className="flex shrink-0 items-center text-foreground transition hover:text-primary"
         >
           <Image
-            src="/favicon.png?v=mesh-blue"
+            src="/brand/logo-cad.svg"
             alt=""
-            width={22}
+            width={52}
             height={22}
             priority
             unoptimized
-            className="size-[22px] shrink-0"
+            className="h-[22px] w-auto shrink-0"
           />
-          <span className="min-w-0 truncate text-sm font-medium">
-            text-to-cad
-          </span>
         </Link>
 
         <nav
           aria-label="Primary"
-          className="ml-auto hidden items-center gap-1 sm:flex"
+          className="hidden items-center gap-1 sm:flex"
         >
-          <a
-            className="px-2.5 py-1.5 text-ui text-muted-foreground transition hover:bg-secondary hover:text-foreground"
-            href="#skills"
-          >
-            SKILLS
-          </a>
-          <a
-            className="px-2.5 py-1.5 text-ui text-muted-foreground transition hover:bg-secondary hover:text-foreground"
-            href="#installation"
-          >
-            INSTALL
-          </a>
-          <VersionLink version={version} />
+          {NAV_SECTIONS.map(({ id, label }) => (
+            <a
+              key={id}
+              href={`/#${id}`}
+              aria-current={activeSection === id ? "location" : undefined}
+              className={`rounded-md px-2.5 py-1.5 text-ui transition hover:bg-secondary hover:text-foreground ${activeSection === id ? "text-foreground" : "text-muted-foreground"}`}
+            >
+              {label}
+            </a>
+          ))}
         </nav>
 
-        <div className="ml-auto flex shrink-0 items-center gap-1 sm:ml-0">
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          <VersionLink version={version} />
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
                 asChild
-                variant="outline"
+                variant="ghost"
                 size="icon"
-                className="card-glow h-8 w-8 border-border bg-card text-foreground hover:bg-secondary hover:text-primary"
+                className="text-muted-foreground hover:text-foreground"
               >
                 <a
                   href={discordUrl}
@@ -146,8 +185,8 @@ export function SiteHeaderClient({
             <TooltipTrigger asChild>
               <Button
                 asChild
-                variant="outline"
-                className="card-glow h-8 border-border bg-card px-2 text-foreground hover:bg-secondary hover:text-primary"
+                variant="ghost"
+                className="px-2 text-muted-foreground hover:text-foreground"
               >
                 <a
                   href={GITHUB_REPO_URL}
@@ -157,7 +196,7 @@ export function SiteHeaderClient({
                 >
                   <GitHubLogo className="size-3.5" />
                   {githubStars !== null ? (
-                    <span className="text-label font-medium tabular-nums tracking-wider">
+                    <span className="text-label font-medium tabular-nums">
                       {formatGitHubStars(githubStars)}
                     </span>
                   ) : null}

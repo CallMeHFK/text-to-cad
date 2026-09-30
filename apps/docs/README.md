@@ -1,20 +1,38 @@
 # Docs site
 
-The documentation website (Next.js) — texttocad.dev. A cadgen-js CLIENT: the
+The documentation website (Next.js) — texttocad.dev. A @text-to-cad/core CLIENT: the
 hero and example scenes render real CAD models in the browser through the
 same shared runtime the viewer uses.
 
 **PURPOSE** — the public documentation and marketing site.
 
-**MAY DEPEND ON** — `cadgen-js` (source, mapped by `tsconfig.json` and
-aliased in `next.config.ts` to `../../packages/cadgen-js/src`) and its own
-npm dependencies. Never the viewer, never cadgen Python.
+**MAY DEPEND ON** — compiled `@text-to-cad/core` exports and this app's own
+npm dependencies. Never another app or the running cadgen Python service.
+The root npm workspace and lockfile resolve dependencies; no source aliases
+or consumer-owned declarations are required.
 
 **DEPENDED ON BY** — nothing in the repo. It is a website, not an install.
+
+The package migration is a pure refactor: the site's UI, UX, functionality, content and static
+CAD showcases remain unchanged. Normal development, checks and deployment use
+existing static assets and do not start Python. Asset regeneration is still an
+explicit operation. The hero composes an explicit static HTTP resource provider
+from core for descriptors, surfaces and sidecars. It needs no FileViewer host,
+Electron services or Python backend; the resource-provider migration keeps its
+existing static asset URLs and rendering behavior.
+
+Install from the repository root with `npm ci` (or the docs-only workspace
+filter), then `npm run build:docs`. `apps/docs/vercel.json` runs the root
+workspace install and build from Vercel's `apps/docs` root directory. Shared
+package outputs are built first; production uses the same package exports as
+local development.
+
 
 ## Build and deploy
 
 ```bash
+npm ci --workspace packages/core --workspace apps/docs
+npm run build --workspace @text-to-cad/core
 npm --prefix apps/docs run check    # the CI gate: lint + typecheck + build
 ```
 
@@ -36,7 +54,7 @@ node apps/docs/scripts/sync-hero-step-assets.mjs   # same CADGEN_CACHE_DIR as th
 The sync script asks cadgen for the tree by the STEP's bytes and exports a
 view of it, so it never restates a store path. The check script
 (`scripts/check-hero-step-assets.mjs`, part of `npm run check`) pins the surf
-container and sidecar contracts against cadgen-js so a schema bump cannot
+container and sidecar contracts against @text-to-cad/core so a schema bump cannot
 silently break the hero render.
 
 ## The shape of the app
@@ -49,49 +67,59 @@ public/hero/     # showcase tree view + sidecar, plain files (never LFS)
 scripts/         # asset checks
 ```
 
-## Icon
+## Brand and loading icon
 
-The `/icon` route contains the animated 3D mark, with play/pause, a speed
-slider, five palettes (Blue, Silver, Graphite, Gold and Violet), and PNG/GLB
-downloads. Drag to rotate and scroll to zoom. It starts paused when reduced
-motion is preferred. The header, browser favicon, shortcut icon and Apple
-icon use the static blue mark, without hover animation.
+The header uses the blue CAD wordmark and favicons use C, both with soft relief shading. The homepage
+and repository README use the TEXT2CAD PNG. `/icon` provides downloadable
+C, CAD and TEXT2CAD SVGs and PNGs, followed by the original animated loading-icon
+playground. The original mesh, animation and the shared UI loading assets stay
+unchanged.
 
-Everything for the icon lives in this app:
+The vectors live in `public/brand/`. Regenerate them and the viewer's static
+copy from the repository root with `node scripts/brand/generate-logos.mjs`.
+See [the brand recipe](../../scripts/brand/README.md) for the block grid,
+projection, palette and favicon export. These are checked-in assets; ordinary
+builds do not regenerate them.
+
+The loading-icon playground retains play/pause, speed, five palettes, drag to
+rotate, zoom, and PNG/GLB downloads. It starts paused for reduced motion.
+Its source remains here:
 
 - `src/lib/icon/model.mjs`: the Three.js mesh and animation generator.
-- `src/lib/icon/stage.mjs`: shared camera, palettes and studio lighting.
-- `src/components/icon-playground.tsx`: the interactive preview and PNG render.
-- `scripts/icon/`: GLB export, geometry/animation verification and favicon bake.
-- `public/icon/icon.glb`: generated before `npm run dev` and `npm run build`,
-  ignored by Git. The deployed asset needs neither Git LFS nor `models/`.
+- `src/lib/icon/stage.mjs`: camera, palettes and studio lighting.
+- `src/components/icon-playground.tsx`: preview and PNG render.
+- `scripts/icon/`: GLB export and geometry/animation verification.
+- `public/icon/icon.glb`: generated before dev/build, ignored by Git.
 
-The mesh has an icosahedral hub and twenty triangular prongs. Every root
-shares the hub's exact face perimeter, including in the contracted pose.
-The crowns translate rigidly as their trunks grow and retract in unison.
-One GLB clip includes ten contraction cycles and a complete 360° orbit.
-At the default 4× playback, a contraction takes 2 seconds and the orbit takes
-20 seconds. The fully expanded reference orientation is stored in the GLB.
+The mesh has an icosahedral hub and twenty triangular prongs with flush roots
+and rigid crowns. The GLB carries ten contraction cycles and a complete orbit;
+at 4× playback these take two seconds and twenty seconds respectively.
 
 ```bash
 npm --prefix apps/docs run icon:generate
 npm --prefix apps/docs run icon:verify
 ```
 
-`npm run check` also generates and verifies the GLB. Verification reloads
-the exported file and checks closed meshes, face winding, flush roots, rigid
-crowns, contraction endpoints and the full orbit loop.
+`npm run check` also generates and verifies the GLB, checking closed meshes,
+face winding, flush roots, rigid crowns, endpoints and the orbit loop.
 
-To refresh both static favicons after editing the model or lighting:
+## Visual system
 
-1. Start the docs app and open `/icon`.
-2. Download **Blue PNG**. This always renders the fully expanded reference
-   pose at 512 × 512 with transparency, regardless of the preview controls.
-3. Bake the PNG and multi-size ICO together (requires Pillow):
-
-   ```bash
-   python apps/docs/scripts/icon/bake-favicon.py /path/to/icon-blue.png
-   ```
-
-Commit both favicon files with the source changes. The PNG renderer runs in
-the browser; the hosted page has no filesystem write endpoint.
+The site uses shadcn's neutral light surfaces and the viewer's charcoal dark
+surfaces, system sans-serif type, and the same 0.625rem radius scale. Blue primary
+actions use muted shades of the logo's pastel blue through shadcn semantic
+tokens: #2c7197 in light mode and #30779d in dark mode, with #f5fbff labels.
+Text contrast is 5.14:1 and 4.73:1 respectively; the solid darker hover shades
+also exceed 4.5:1. Focus rings use a deeper brand blue on white and the logo's
+pale highlight on charcoal. All installation Copy buttons use the same blue
+primary action style. Install uses the same heading scale as Skills. The header lists Install, Skills
+and Plugins, with Install active by default and the active link following the
+visible section. Install has one Skills CLI command; Plugins contains only
+provider-native installation commands and guidance. Install boxes and explanatory text fill the content width.
+Command text remains monospace. The unboxed wordmark and one prominent tagline
+sit above the independently framed CAD demo. “100% open source and free.” follows
+“Give your agent CAD superpowers.” in blue, using a lighter brand shade on dark
+surfaces. The app owns
+its tokens and primitives in `src/app/globals.css` and `src/components/ui/`,
+without importing another app or the CAD UI package. Keep the palette aligned
+with `packages/ui/src/styles/tokens.css` when the viewer's base theme changes.
