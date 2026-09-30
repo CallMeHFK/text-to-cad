@@ -500,6 +500,12 @@ release state must keep `VERSION`, the derived metadata and the pins valid; the
 `Test` workflow checks all three in a separate job so code tests still run when
 they are wrong.
 
+Forks of this repository never dispatch `Prepare Release`, so their `VERSION`
+only moves by syncing upstream, and sync PRs carry the release bumps those
+upstream commits contain. The `Only release/* branches may change VERSION` step
+exempts them: `check-pr-version.sh` enforces the release branch rule only when
+`GITHUB_REPOSITORY` is the upstream repository.
+
 ### Build artifacts live in the wheel, never in git
 
 `main` is source. Everything cadgen executes that is not Python — the Node

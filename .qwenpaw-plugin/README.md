@@ -10,7 +10,6 @@ workspace.
 | Skill      | What it does                                                                                    |
 | ---------- | ----------------------------------------------------------------------------------------------- |
 | `cad`      | Creates, edits, and validates parametric CAD models; STEP default, STL/3MF/GLB exports.         |
-| `cad-viewer` | Opens a local browser preview (CAD Viewer) for CAD, robot-description, and DXF files.         |
 | `step-parts` | Finds off-the-shelf STEP parts (screws, bearings, motors, connectors) on step.parts.          |
 | `engineering-drawing` | Projects a dimensioned PDF drawing from the part: orthographic views, hole callouts, notes and a title block on ISO sheets. |
 | `dxf`      | Generates and validates 2D DXF drawings from Python sources or CAD geometry.                    |
