@@ -75,6 +75,44 @@ class DeclaredOutputs(unittest.TestCase):
             script.write_text("def (\n", encoding="utf-8")
             self.assertEqual([], declared_outputs(str(script), "run"))
 
+    def test_a_project_read_again_after_another_reads_its_own_lib(self):
+        # The daemon reads every project's declarations in one process, and each
+        # project keeps its helpers in a package named `lib`: a, then b, then a again
+        # once its helper changed must evaluate a's `out=` from a's lib, not b's.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            self.addCleanup(_forget_project_modules, root)
+            for name in ("a", "b"):
+                src = root / name / "src"
+                (src / "lib").mkdir(parents=True)
+                (src / "lib" / "__init__.py").write_text("", encoding="utf-8")
+                (src / "lib" / "dims.py").write_text(f"SIZE = '{name}1'\n", encoding="utf-8")
+                (src / f"{name}.py").write_text(
+                    "from cadgen import step\nfrom cadgen import build123d as bd\nfrom lib.dims import SIZE\n\n"
+                    f"@step(out='{name}_' + SIZE + '.step')\ndef {name}():\n    return bd.Box(1, 1, 1)\n",
+                    encoding="utf-8",
+                )
+
+            def declared(name):
+                return [Path(path).name for path in declared_outputs(str(root / name / "src" / f"{name}.py"), "run")]
+
+            self.assertEqual(["a_a1.step"], declared("a"))
+            self.assertEqual(["b_b1.step"], declared("b"))
+            (root / "a" / "src" / "lib" / "dims.py").write_text("SIZE = 'a2'\n", encoding="utf-8")
+            self.assertEqual(["a_a2.step"], declared("a"))
+
+
+def _forget_project_modules(root: Path) -> None:
+    """Drop what a test's projects left in this process: their modules, sys.path roots."""
+    import sys
+
+    prefix = str(root)
+    for name, module in list(sys.modules.items()):
+        paths = [getattr(module, "__file__", None), *[str(entry) for entry in getattr(module, "__path__", None) or ()]]
+        if any(path and str(path).startswith(prefix) for path in paths):
+            sys.modules.pop(name, None)
+    sys.path[:] = [entry for entry in sys.path if not entry.startswith(prefix)]
+
 
 class Lifecycle(unittest.TestCase):
     def setUp(self) -> None:
@@ -108,14 +146,29 @@ class Lifecycle(unittest.TestCase):
                                            preview={"output": output, "tree": tree, "kinematics": {"mates": []}}))
         snapshot = self.ledger.snapshot()[0]
         self.assertEqual(snapshot["previews"][output]["tree"], "latest")
-        snapshot["previews"][output]["kinematics"]["mates"].append("mutation")
-        self.assertEqual(self.ledger.snapshot()[0]["previews"][output]["kinematics"]["mates"], [])
+        snapshot["previews"][output]["tree"] = "mutation"
+        self.assertEqual(self.ledger.snapshot()[0]["previews"][output]["tree"], "latest")
         self.ledger.observe(self._event(self.model, "done", job=job["id"]))
         self.assertEqual(job["state"], "building", "one model completing does not finish a multi-model request")
         self.ledger.finish(job, 0)
         self.assertEqual(job["state"], "done")
         self.ledger.observe(self._event(self.model, "building", job=job["id"], sequence=100))
         self.assertEqual(job["state"], "done", "late forwarded events cannot reopen completed requests")
+
+    def test_a_job_keeps_only_what_its_readers_read_of_a_result(self):
+        # The viewer's status reads a saved result's tree and digest; nothing reads
+        # a preview's annotations, so a payload carrying them keeps none.
+        job = self.ledger.start(tool="run", subject=self.model)
+        output = str(Path(self.model).with_suffix(".step"))
+        self.ledger.observe(self._event(self.model, "building", job=job["id"], sequence=1, preview={
+            "output": output, "tree": "source", "kinematics": {"mates": [1] * 1000}, "appearance": {},
+            "animation": "export const clips = {};", "surfaceProducer": {"scheme": 19}}))
+        self.ledger.observe(self._event(self.model, "building", job=job["id"], sequence=2, saved={
+            "output": output, "tree": "document", "documentHash": "abc", "appearance": {"materials": {}}}))
+        snapshot = self.ledger.snapshot()[0]
+        self.assertEqual(snapshot["previews"][output], {"output": output, "tree": "source", "sequence": 1})
+        self.assertEqual(snapshot["savedResults"][output],
+                         {"output": output, "tree": "document", "documentHash": "abc", "sequence": 2})
 
     def test_parent_announcements_cannot_claim_child_preview_and_epochs_are_unique(self):
         parent = self.ledger.start(tool="run", subject=self.model)
