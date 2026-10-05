@@ -61,7 +61,6 @@ import {
   buildReferenceCacheKey,
   copyTextLines,
   computeNextSelectionIds,
-  fileReferencePath,
   orderedStringListEqual,
   parseAssemblyPartReferenceSelectionId,
   topologyCompositionKeyMatches,
@@ -83,7 +82,7 @@ import {
 import { createAnimationClock, AnimationClockProvider } from "./workbench/animationClockStore.js";
 import { measureFilterSnaps } from "./workbench/measureRulerState.js";
 import { useStepMeasure } from "./workbench/useStepMeasure.js";
-import { cadFileParamForEntry, fileKey } from "./workbench/entryPaths.js";
+import { fileKey } from "./workbench/entryPaths.js";
 import {
   stepModuleTopologyOccurrenceIds
 } from "./workbench/topologyCapabilities.js";
@@ -236,10 +235,8 @@ function StepSurfaceBody({ view, data }) {
   const storeSnapshot = useSyncExternalStore(client.subscribe, client.getSnapshot, client.getSnapshot);
   const selectedKey = fileKey(entry);
   const liveEntry = workspace.entry;
-  const explicitFileParam = cadFileParamForEntry(entry);
   const catalogHydrated = storeSnapshot.hydrated;
   const catalogError = storeSnapshot.error || "";
-  const selectedCatalogPending = liveEntry?.catalogPending === true;
   const [selectedReferenceIds, setSelectedReferenceIds, selectedReferenceIdsRef] = useSyncedState([]);
   const [largeFileState, setLargeFileState] = useState(() => normalizeLargeFileState(DEFAULT_LARGE_FILE_STATE));
   // Hover lives in a store, not in this component's state: a hover change re-renders the
@@ -330,13 +327,11 @@ function StepSurfaceBody({ view, data }) {
     buildNormalizedReferenceState,
   });
 
-  // File state uses the host's absolute identity; server requests use the
-  // catalog's path relative to this client's served root.
-  const editingFile = liveEntry ? cadFileParamForEntry(liveEntry) : explicitFileParam;
+  const editingFile = liveEntry ? fileKey(liveEntry) : selectedKey;
   const editingAvailable = /\.st(?:ep|p)$/i.test(editingFile || "");
   // The build feed: status only ("Updating model…", a failed build). The view shows the saved file.
   const editingPreview = useEditingPreview(editingFile, { client,
-    enabled: editingAvailable && !selectedCatalogPending,
+    enabled: editingAvailable,
   });
   const editingHasView = entryHasMesh(liveEntry);
   // Unified render-artifact status for the selected entry: ready (render) | generating (loading) |
@@ -345,9 +340,8 @@ function StepSurfaceBody({ view, data }) {
   // asked again when this file's entry changes, never for the rest of the catalog
   // (`artifactFreshnessKey`), and a build of a model already on screen is left to the build feed.
   const selectedArtifact = useArtifact(
-    liveEntry ? cadFileParamForEntry(liveEntry) : "",
+    liveEntry ? fileKey(liveEntry) : "",
     {
-      enabled: !selectedCatalogPending,
       freshnessKey: artifactFreshnessKey(liveEntry, storeSnapshot),
       shown: editingHasView,
       client,
@@ -359,8 +353,8 @@ function StepSurfaceBody({ view, data }) {
   // generating — a stale frame must not outlive the build that produced it.
   const selectedArtifactProgress = selectedArtifactGenerating ? selectedArtifact.progress : null;
   // The name copied refs give this file, so they still say which file they belong to when
-  // pasted into a prompt spanning several: the host's, which knows its root (FileSource.referencePath).
-  const referencePath = fileReferencePath(view.source, view.file.path);
+  // pasted into a prompt spanning several: its absolute path.
+  const referencePath = view.file.path;
   // While the artifact is missing/stale/building/broken, hide the (possibly stale) render assets so
   // the viewer shows a loading or error state and renders only the fresh artifact once ready.
   const selectedEntry = useMemo(
@@ -677,7 +671,7 @@ function StepSurfaceBody({ view, data }) {
     status !== ASSET_STATUS.ERROR &&
     ((!selectedMeshMatches && !retainedPreviousStepMeshError) ||
       status === ASSET_STATUS.LOADING || selectedStepModuleLoading);
-  const effectiveViewerLoading = viewerLoading || selectedArtifactGenerating || selectedCatalogPending;
+  const effectiveViewerLoading = viewerLoading || selectedArtifactGenerating;
   // The file explorer spins the entry the viewer is actually working on. Artifact
   // generation is only half of that -- a built package still has to be fetched and
   // decoded, and an entry sitting un-built is NOT loading (nothing loads in a static
@@ -1524,7 +1518,7 @@ function StepSurfaceBody({ view, data }) {
       progress: selectedLoadProgress || (editingPreview.state.phase ? { phase: editingPreview.state.phase, detail: editingPreview.state.detail } : null),
       alert: viewerAlert || (!selectedMeshData && catalogError ? catalogError : null) || annotationAlert,
       editPending: editingBuildActive(editingPreview.state),
-      finding: !catalogHydrated || selectedCatalogPending
+      finding: !catalogHydrated
     },
     // The playbar belongs to preview here, not to every file with routines: leaving preview
     // puts the model back at rest.
@@ -1759,7 +1753,7 @@ function StepSurfaceBody({ view, data }) {
   // Copy is clipboard-only; what goes to the agent goes through Quick Edit.
   const deliverReferenceText = useCallback((text) => host.clipboard.writeText(text), [host.clipboard]);
   const referencesForHost = useCallback((text) =>
-    referencesFromCopyText(text, cadFileParamForEntry(selectedEntry)).map((reference) => {
+    referencesFromCopyText(text, fileKey(selectedEntry)).map((reference) => {
       const label = referenceLabel(reference.selector, displayStepTreeRoot || stepTreeRoot);
       return { ...reference, ...(label ? { label } : {}) };
     }), [selectedEntry, displayStepTreeRoot, stepTreeRoot]);

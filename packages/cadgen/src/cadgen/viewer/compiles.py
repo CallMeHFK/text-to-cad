@@ -1,8 +1,8 @@
 """Document compiles for the CAD Viewer: jobs in cadgen's pool.
 
 The viewer renders what exists. Its one build-shaped action is compiling a
-document whose BYTES have no tree yet — a vendor ``.step`` dropped into the
-directory, or a generated one built into another store — and that is a compile
+document whose BYTES have no tree yet — a vendor's ``.step``, or a generated
+one built into another store — and that is a compile
 JOB submitted to the pool (``cadgen.daemon.executors.submit_compile``): the same
 job a door submits when handed such a document. It runs on a daemon spare (or a
 transient subprocess under ``CADGEN_DAEMON=0``), takes a job slot, coalesces
@@ -84,9 +84,6 @@ class DocumentCompiler:
         self._in_flight: dict[str, _Compile] = {}
         # The last failed compile of a document, with the bytes it failed on (mtime, size).
         self._failed: dict[str, tuple[tuple[int, int] | None, dict]] = {}
-
-    def shutdown(self) -> None:
-        """Nothing to own: the jobs belong to the pool, which outlives the viewer."""
 
     def compile(self, candidate: str, *, force: bool = False) -> dict:
         """Compile one document, attaching to an in-flight compile for the same one.
