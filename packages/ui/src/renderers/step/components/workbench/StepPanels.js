@@ -1,7 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { buildPositionSection } from './MotionControlsSection.js';
 import { STEP_MODEL_ROOT_ID } from '@text-to-cad/core/lib/step/stepTree.js';
-import { buildIssuesSection } from './FileStatusSection.js';
 import { useStepReference } from './StepReferenceSection.js';
 import ModelingTree from './ModelingTree.jsx';
 import ToolPanel from '../../../kit/tools/ToolPanel.jsx';
@@ -32,8 +31,8 @@ function useLatestActions(actions) {
 
 /**
  * A STEP's panels in the tool stack, top to bottom: while Select is the tool, **Features** (the
- * filter and the model tree), the **Reference** for what is selected, and **Issues** when there
- * are any; while Position is the tool, **Position**. Each stays mounted while its tool is not
+ * filter and the model tree) and the **Reference** for what is selected; while Position is the
+ * tool, **Position**. Each stays mounted while its tool is not
  * up, so the tree keeps its expansion, filter and scroll. The kept effects' panels follow them
  * (`ModelTools.jsx`); the stack itself is the shell's (`kit/shell/RendererShell.jsx`).
  *
@@ -43,18 +42,20 @@ function useLatestActions(actions) {
 export function useStepPanels({
   client, selectActive, positionActive, selectedEntry, viewerLoading,
   geometryInspection = null, stepTreeRoot, isAssemblyView = false,
-  selectedMeshData = null, selectedSourceAppearance = null,
+  selectedMeshData = null,
   selectedPartIds = EMPTY, selectedReferenceIds = EMPTY, selectedReferences = EMPTY,
   hiddenPartIds = EMPTY, focusedNodeIds = EMPTY, selectableNodeIds = null,
   expandedTreeNodeIds = EMPTY, onToggleTreeNode,
   activeTreeNodeScrollKey = '', onSelectTreeNode, onSelectReferenceGroup, onClearSelection,
   onFocusTreeNode, onUnfocusTreeNode, onExitAllIsolate, onTogglePartVisibility,
   onCopySelection, onHoverTreeNode, showAllHiddenParts,
+  // The Reference panel's Copy (Copy All): `{ label, shortcut, onCopy }`, or null with nothing to copy.
+  selectionCopy = null,
   // The menus a tree row carries: a part's descriptor per node, a feature's per set of faces
   // and edges (the viewport's menu over that topology), and the one set of actions behind both.
   menuForNode = null, menuForReferences = null, partMenuActions = null,
   treeSelectionDisabled = false, selectMode = 'all', loadingGeometry = false,
-  statusItems = EMPTY, positionRuntime = null, selectModeMenu = null, onCopyReference = null, onClosePosition = null,
+  positionRuntime = null, selectModeMenu = null, onClosePosition = null,
   // The viewport's hover (`workbench/hoverStore.js`): a large tree under Faces or Edges asks for the
   // topology of the part the pointer rests on.
   hoverStore = null,
@@ -77,6 +78,9 @@ export function useStepPanels({
     ])],
   }), [selectedReferences, selectedPartIds, modelParts]);
   const measurements = useMemo(() => stepGeometryMeasurements(measuredSelection, modelReferences, modelParts), [measuredSelection, modelReferences, modelParts]);
+  // A part's or a subassembly's own size, from the boxes of the parts it is made of: the browsed
+  // one's in a multi-selection, where the selection's size is all of them together.
+  const partsSize = useCallback(ids => stepGeometryMeasurements({ partIds: ids }, EMPTY, modelParts).size, [modelParts]);
   // A face or edge is named after its part as the tree names that part.
   const partNames = useMemo(() => {
     const names = new Map();
@@ -85,8 +89,7 @@ export function useStepPanels({
     return names;
   }, [stepTreeRoot]);
   const partName = useCallback(id => partNames.get(String(id || '')) || '', [partNames]);
-  const copyReference = useLatestCallback(onCopyReference);
-  const reference = useStepReference({ references: selectedReferences, meshData: selectedMeshData, sourceAppearance: selectedSourceAppearance, measurements, partName, onCopy: copyReference });
+  const reference = useStepReference({ references: selectedReferences, meshData: selectedMeshData, measurements, partsSize, partName });
   // What every tree row is handed, the same object until something in it changes: the host's
   // actions behind stable identities, its menus and state as they are.
   const toggleTreeNode = useLatestCallback(onToggleTreeNode), selectTreeNode = useLatestCallback(onSelectTreeNode);
@@ -109,7 +112,6 @@ export function useStepPanels({
   if (!selectedEntry) return null;
   const selectionDetails = selectedReferences.length || measuredSelection.partIds.length ? reference : null;
   const position = buildPositionSection({ poseRuntime: positionRuntime });
-  const issues = buildIssuesSection(statusItems);
   return <>
     {/* Features, then the Reference for a selection: both the tree's, which knows what is picked in it. */}
     <ModelingTree key={`${selectedEntry.file}:${geometryInspection?.revision}`}
@@ -118,11 +120,10 @@ export function useStepPanels({
       disabled={treeSelectionDisabled || viewerLoading}
       references={modelReferences} selectedReferences={selectedReferences}
       selectedReferenceIds={selectedReferenceIds} selectedPartIds={selectedPartIds}
-      selectionDetails={selectionDetails} activeTreeNodeScrollKey={activeTreeNodeScrollKey}
+      selectionDetails={selectionDetails} selectionCopy={selectionCopy} activeTreeNodeScrollKey={activeTreeNodeScrollKey}
       onLoadTopology={loadTopology} onSelect={selectReferenceGroup} onClearSelection={clearSelection}
       partControls={partControls} hoverStore={hoverStore}
     />
-    {issues ? <ToolPanel id="issues" title={issues.title} label="Issues" fit="details" hidden={!selectActive}>{issues.content}</ToolPanel> : null}
     {/* Headed "Position" with its Reset; sized like the tree: its content's height, up to half the stack. */}
     {/* Its X puts Position down, back to Select; the values stay. */}
     {position ? <ToolPanel id="position" title={position.title} actions={position.actions} label="Position controls" fit="details" resizable

@@ -6,7 +6,7 @@ import { lodTessellationForLevel } from "@text-to-cad/core/lib/surf/lodPolicy.js
 import { completedPackages, createCompletedPackageCache, renderAssetCacheStatsWithPackages } from "./completedPackageCache.js";
 import { renderMemoryAccounting } from "./renderMemoryAccounting.js";
 
-const root = { workspaceId: "package-root", resources: {cacheKey: () => "test-service"} };
+const root = { resources: {cacheKey: () => "test-service"} };
 const matrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 function model(file = "assembly.step", count = 1) {
   const entry = { file, kind: "assembly", sourceFormat: "step", hash: `revision-${file}`,
@@ -56,15 +56,14 @@ test("a 317-component working set survives component-LRU-sized churn with privat
   assert.equal(cache.stats().entries, 2);
 });
 
-test("root, service generation, revision, source appearance and replacement runtime view are exact boundaries", () => {
+test("service generation, revision, source appearance and replacement runtime view are exact boundaries", () => {
   const cache = createCompletedPackageCache(), a = model();
   const populate = () => assert.equal(cache.set(root, a.entry, a.context), true);
   populate();
-  assert.equal(cache.get({ ...root, workspaceId: "other" }, a.entry), null);
   assert.equal(cache.get({ ...root, resources: {cacheKey: () => "other-service"} }, a.entry), null);
-  assert.ok(cache.get({ ...root }, a.entry), "a replacement client for the same root may reopen a closed tab");
+  assert.ok(cache.get({ ...root }, a.entry), "a replacement client for the same service may reopen a closed tab");
   for (const change of [{ hash: "new" }, { documentHash: "new" }, { appearanceHash: "new" },
-    { url: "http://cad.test/new/" }, { sourceSidecar: { appearance: { material: "new" } } }, { editingPreview: true }]) {
+    { url: "http://cad.test/new/" }, { sourceSidecar: { appearance: { material: "new" } } }]) {
     populate();
     assert.equal(cache.get(root, { ...a.entry, ...change }), null);
     assert.equal(cache.stats().entries, 0, "the obsolete revision is released");
@@ -97,10 +96,10 @@ test("recognition reads only private exact identities from the matching root, re
   assert.ok(again.c1);
   assert.equal(cache.stats().bytes, before.bytes, "identity reads retain no geometry or metadata copies");
   assert.equal(cache.peekComponentIdentities(root, a.entry), null, "a descriptor is required to prove the runtime view");
-  for (const client of [{ ...root, workspaceId: "other" }, { ...root, resources: {cacheKey: () => "other-service"} }]) {
+  for (const client of [{ ...root, resources: {cacheKey: () => "other-service"} }]) {
     assert.equal(cache.peekComponentIdentities(client, a.entry, { descriptor: a.context.descriptor }), null);
   }
-  for (const change of [{ hash: "new" }, { documentHash: "new" }, { editingPreview: true }]) {
+  for (const change of [{ hash: "new" }, { documentHash: "new" }]) {
     populate();
     assert.equal(cache.peekComponentIdentities(root, { ...a.entry, ...change }, { descriptor: a.context.descriptor }), null);
   }

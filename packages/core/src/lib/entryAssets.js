@@ -113,7 +113,7 @@ export function entryMeshAssetSignature(entry) {
       ? entryAssetHash(entry, "glb")
       : entryMeshAssetHash(entry)
   );
-  const appearance = entrySourceFormat(entry) === RENDER_FORMAT.STEP && !entry?.editingPreview
+  const appearance = entrySourceFormat(entry) === RENDER_FORMAT.STEP
     ? normalizeString(entry?.appearanceHash)
     : "";
   return appearance ? `${mesh}:${appearance}` : mesh;

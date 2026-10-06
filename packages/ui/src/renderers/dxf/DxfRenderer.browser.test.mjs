@@ -30,7 +30,7 @@ const HARNESS_SIZE = '<style>#root > div { width: var(--harness-width, 800px) !i
 let temporary, server, browser;
 before(async () => {
   temporary = await mkdtemp(join(tmpdir(), 'text-to-cad-dxf-browser-'));
-  await build({ entryPoints: [fileURLToPath(new URL('../harness/index.tsx', import.meta.url))], outfile: join(temporary, 'harness.js'), bundle: true, format: 'esm', platform: 'browser', conditions: ['production'], jsx: 'automatic', loader: { '.webp': 'dataurl', '.avif': 'dataurl', '.woff2': 'dataurl' } });
+  await build({ entryPoints: [fileURLToPath(new URL('../harness/index.tsx', import.meta.url))], outfile: join(temporary, 'harness.js'), bundle: true, format: 'esm', platform: 'browser', conditions: ['production'], jsx: 'automatic', loader: { '.webp': 'dataurl', '.avif': 'dataurl', '.woff2': 'dataurl', '.svg': 'dataurl' } });
   const bundle = await readFile(join(temporary, 'harness.js'));
   const css = await readFile(new URL('../../../dist/styles.css', import.meta.url));
   const files = ['sample.dxf', 'empty.dxf', 'broken.dxf'];
@@ -40,16 +40,17 @@ before(async () => {
     if (url.pathname === '/harness.js') { response.setHeader('Content-Type', 'text/javascript'); response.end(bundle); }
     else if (url.pathname === '/styles.css') { response.setHeader('Content-Type', 'text/css'); response.end(css); }
     else if (url.pathname.endsWith('/__cad/drawing')) {
-      const drawing = DRAWINGS[url.searchParams.get('file')];
+      // Asked for by the file's absolute path, which names the fixture last.
+      const drawing = DRAWINGS[String(url.searchParams.get('file')).split('/').pop()];
       response.setHeader('Content-Type', 'application/json');
       if (!drawing) { response.statusCode = 400; response.end(JSON.stringify({ error: BAD_DXF_MESSAGE })); return; }
       response.end(JSON.stringify(drawing));
     } else if (url.pathname.endsWith('/__cad/catalog')) {
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ rootId: root, entries: files.map(file => (
-        { kind: 'dxf', file, rootRelativeFile: file, url: `/${file}`, hash: `${root}-${file}`, bytes: 4096 })) }));
+      response.end(JSON.stringify({ entries: files.map(file => (
+        { kind: 'dxf', file: `/models/${file}`, url: `/${file}`, hash: `${root}-${file}`, bytes: 4096 })) }));
     } else if (url.pathname.endsWith('/__cad/server')) {
-      response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ rootId: root, rootPath: '/models', backend: 'cadgen' }));
+      response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ backend: 'cadgen' }));
     } else { response.setHeader('Content-Type', 'text/html'); response.end(`<!doctype html><html><head><title>Host title</title><link rel="stylesheet" href="/styles.css">${HARNESS_SIZE}</head><body><div id="root"></div><script type="module" src="/harness.js"></script></body></html>`); }
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -67,7 +68,8 @@ async function open(t, file) {
   page.setDefaultTimeout(20000);
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
-  await page.addInitScript(() => { window.Worker = undefined; });
+  // A clipboard host, like web: these tests drive and measure the drawing itself.
+  await page.addInitScript(() => { window.Worker = undefined; window.__cadPromptDestination = 'clipboard'; });
   await page.goto(`http://127.0.0.1:${server.address().port}/?file=${file}`);
   return { page, errors, pane: page.getByTestId('one') };
 }
@@ -335,7 +337,7 @@ test('an unreadable drawing shows the server’s own sentence, and an empty one 
   assert.match(text, /The viewer couldn’t complete the request/);
   assert.match(text, /HTTP 400/);
   assert.match(text, /not a readable DXF document/);
-  assert.match(text, /Try again/);
+  assert.match(text, /Retry/);
   assert.equal(await broken.pane.locator('[data-viewer-loading]').count(), 0, 'and not a spinner forever');
 
   const empty = await open(t, 'empty.dxf');
@@ -354,7 +356,7 @@ test('the view a person chose comes back when the tab is reopened', async (t) =>
   await wheelAt(page, canvas, { x: canvas.width * 0.35, y: canvas.height * 0.6 }, deltaForFactor(3));
   const chosen = inkBox(await frame(pane, fittedShot));
 
-  const key = JSON.stringify(['sample.dxf', 'dxf']);
+  const key = JSON.stringify(['/models/sample.dxf', 'dxf']);
   await page.waitForFunction(stateKey => window.cadHarness.state.renderers?.[stateKey]?.camera?.scale > 0, key);
   const record = await page.evaluate(stateKey => window.cadHarness.state.renderers[stateKey], key);
   assert.equal(record.version, 2);

@@ -1,12 +1,12 @@
 {
   "id": "cad",
   "name": "text-to-cad",
-  "version": "0.7.4",
+  "version": "0.7.15",
   "type": "general",
-  "description": "CAD, robotics, fabrication, and local review skills.",
+  "description": "The text-to-cad plugin gives your agent local workflows for generating 3D models as STEP, GLB, STL or 3MF files. It also does design for manufacturing checks, generates engineering drawings, and connects to popular 3D printing, sheet metal and CNC fabrication services.",
   "description_i18n": {
-    "zh-CN": "CAD、机器人描述、加工制造与本地审查技能。",
-    "en-US": "CAD, robotics, fabrication, and local review skills."
+    "zh-CN": "text-to-cad 插件让你的智能体在本地生成 STEP、GLB、STL 或 3MF 三维模型，还可做可制造性设计检查、生成工程图，并对接常用的 3D 打印、钣金与 CNC 加工服务。",
+    "en-US": "The text-to-cad plugin gives your agent local workflows for generating 3D models as STEP, GLB, STL or 3MF files. It also does design for manufacturing checks, generates engineering drawings, and connects to popular 3D printing, sheet metal and CNC fabrication services."
   },
   "author": "earthtojake",
   "entry": {

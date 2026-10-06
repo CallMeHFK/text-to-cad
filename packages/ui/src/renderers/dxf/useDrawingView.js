@@ -163,9 +163,9 @@ export function useDrawingView({ drawing, restored = null, colorScheme = "light"
       contextRef.current = canvas.getContext("2d");
       refit(false);
       // A view the person framed is not taken back by a resize — but it must not keep an
-      // absolute pixel scale either, or a pane that narrows (the file tree opening, the
-      // window resizing) simply crops the drawing where it stands. So it keeps what it
-      // MEANT: the same zoom relative to the fit, still centred on what it was centred on.
+      // absolute pixel scale either, or a pane that narrows (the window resizing) simply
+      // crops the drawing where it stands. So it keeps what it MEANT: the same zoom
+      // relative to the fit, still centred on what it was centred on.
       // That is how the 3D viewports behave when their pane changes size.
       if (heldCentre && heldZoom > 0 && movedRef.current && fitScaleRef.current > 0) {
         const scale = clampScale(heldZoom * fitScaleRef.current, zoomLimits(fitScaleRef.current));
@@ -292,6 +292,27 @@ export function useDrawingView({ drawing, restored = null, colorScheme = "light"
     };
   }, [fit, moveTo, zoomBy]);
 
+  /**
+   * The drawing on its own, for a library card: fitted whole to `width` × `height`, in the theme's
+   * pens on its background, painted on a canvas of its own — the pane's view is left as it is.
+   */
+  const thumbnail = useCallback(({ width, height }) => new Promise((resolve, reject) => {
+    const drawable = drawingRef.current;
+    if (!drawable?.bounds) { reject(new Error("This drawing has nothing to picture.")); return; }
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(width));
+    canvas.height = Math.max(1, Math.round(height));
+    const context = canvas.getContext("2d");
+    if (!context) { reject(new Error("The browser cannot draw the drawing's picture.")); return; }
+    const { background, foreground } = readDrawingThemeColors(containerRef.current, schemeRef.current);
+    clearSurface(context, { width: canvas.width, height: canvas.height, background });
+    drawDrawing(context, drawable, { transform: fitTransform(drawable.bounds, canvas.width, canvas.height), foreground });
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("The browser could not encode this drawing as a PNG."));
+    }, "image/png");
+  }), []);
+
   /** The framed picture as a PNG, background included: it is painted into the canvas. */
   const capture = useCallback(() => new Promise((resolve, reject) => {
     const canvas = canvasRef.current;
@@ -302,5 +323,5 @@ export function useDrawingView({ drawing, restored = null, colorScheme = "light"
     }, "image/png");
   }), []);
 
-  return { containerRef, canvasRef, dragging, fit, zoomBy, capture, transformRef };
+  return { containerRef, canvasRef, dragging, fit, zoomBy, capture, thumbnail, transformRef };
 }

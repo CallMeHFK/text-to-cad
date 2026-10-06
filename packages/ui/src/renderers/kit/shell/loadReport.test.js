@@ -31,12 +31,12 @@ test("finding names the wait before the file is even located", () => {
   assert.equal(report.progress.label, "Finding file");
 });
 
-// An edit of the person's own is a wait even when nothing is downloading; it ends
-// when its result is on screen, not when it is written.
-test("editPending is a wait, and currentPreview ends it", () => {
+// A build of the file is a wait even when nothing is downloading; it ends with the build, when the
+// saved file it wrote is the one on screen.
+test("editPending is a wait until the build ends", () => {
   const pending = shellLoadReport({ load: { busy: false, editPending: true }, ...base, previousView: true });
   assert.equal(pending.busy, true);
   assert.equal(pending.updating, true);
-  const shown = shellLoadReport({ load: { busy: false, editPending: true, currentPreview: true }, ...base, previousView: true });
-  assert.equal(shown.busy, false);
+  const ended = shellLoadReport({ load: { busy: false, editPending: false }, ...base, previousView: true });
+  assert.equal(ended.busy, false);
 });

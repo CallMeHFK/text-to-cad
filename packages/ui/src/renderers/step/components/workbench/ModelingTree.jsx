@@ -8,8 +8,7 @@ import { cn } from '@text-to-cad/ui/utils';
 import ModelPartMenu, { FeatureReferencesContext } from './ModelPartMenu.jsx';
 import ModelPartActions, { ROW_NAME_UNDER_ACTIONS, rowActionsLayout } from './ModelPartActions.jsx';
 import { modelingSelectionPaths } from '../../workbench/modelingSelection.js';
-import ToolPanel, { ToolPanelCollapse } from '../../../kit/tools/ToolPanel.jsx';
-import { TOOL_PANEL_REFERENCE_HEIGHT } from '../../../kit/tools/toolStackLayout.js';
+import ToolPanel, { ToolPanelClose, ToolPanelFooterButton } from '../../../kit/tools/ToolPanel.jsx';
 import { useViewerMobile } from '../../../../file-viewer/responsive.js';
 import { modelingReferenceIds } from '../../workbench/modelingTree.js';
 import { implicitModelingRoots, presentModelingAssembly } from '../../workbench/modelingPresentation.js';
@@ -159,7 +158,7 @@ const MemoModelingSearchRow = memo(ModelingSearchRow);
  * edges are picked. Outside All the disclosure is locked. A part's topology is asked for as its
  * row comes on screen, never for a whole large assembly at once.
  */
-function ModelingTree({ modeling, active, disabled, mode='all', modeMenu=null, loading=false, references=EMPTY, selectedReferenceIds=EMPTY, selectedPartIds=EMPTY, onLoadTopology, onRequestRecognition, onSelect, onClearSelection, stepRoot, selectedReferences, selectionDetails, activeTreeNodeScrollKey, partControls=NO_CONTROLS, hoverStore=null }) {
+function ModelingTree({ modeling, active, disabled, mode='all', modeMenu=null, loading=false, references=EMPTY, selectedReferenceIds=EMPTY, selectedPartIds=EMPTY, onLoadTopology, onRequestRecognition, onSelect, onClearSelection, stepRoot, selectedReferences, selectionDetails, selectionCopy=null, activeTreeNodeScrollKey, partControls=NO_CONTROLS, hoverStore=null }) {
   const mobile = useViewerMobile();
   const {descriptor,results,error,retryFailed}=modeling;
   const [selected,setSelected]=useState(null),[pending,setPending]=useState(null),[localExpanded,setLocalExpanded]=useState(new Set());
@@ -504,15 +503,17 @@ function ModelingTree({ modeling, active, disabled, mode='all', modeMenu=null, l
   const hasDetails=Boolean(nodeDetails || pending || selectionDetails);
   return <>
     {/* No heading: the filter is the panel's top row, and stays put while the tree scrolls under it. */}
-    {/* On a phone it starts folded: the model gets the screen until the person opens it. */}
-    <ToolPanel id="tree" label="Features" fit="tree" resizable defaultCollapsed={mobile} hidden={!active}
+    {/* Its X closes it, and Select, pressed while it is the tool, opens it again. A single part,
+        and any file on a phone, starts with it closed (the Select tool's `panel`), so the model
+        gets the screen until the person opens it. */}
+    <ToolPanel id="tree" label="Features" fit="tree" resizable closable collapsible={false} hidden={!active}
       header={<TreeFilterInput dense label="Filter model" placeholder="Filter…" yieldWhileTyping value={query} onChange={changeQuery} onKeyDown={onSearchKeyDown}
         trailing={<>
           {loading && <span role="status" className="shrink-0 text-micro text-muted-foreground">Loading…</span>}
           {partControls.hiddenPartIds?.length > 0 && <Button disabled={disabled} type="button" variant="ghost" size="sm" className="h-6 shrink-0 px-1.5 text-tiny text-muted-foreground" onClick={partControls.showAllHiddenParts}>Show all</Button>}
-          {/* Select's mode menu (`SelectionModes.jsx`), beside the fold chevron. */}
+          {/* Select's mode menu (`SelectionModes.jsx`), beside the X. */}
           {modeMenu}
-          <ToolPanelCollapse/>
+          <ToolPanelClose/>
         </>}/>}>
       <FeatureReferencesContext.Provider value={references}><div ref={treeRef} className="flex flex-col text-tiny" aria-label="Modeling tree">
         {(error || failed>0) && <p role="alert" className="px-3 pb-2 text-micro text-muted-foreground">{error || `${failed} ${failed===1?'component is':'components are'} unavailable.`} <button type="button" className="underline" onClick={retryFailed}>Retry</button></p>}
@@ -536,10 +537,13 @@ function ModelingTree({ modeling, active, disabled, mode='all', modeMenu=null, l
         </div>
       </div></FeatureReferencesContext.Provider>
     </ToolPanel>
-    {/* What is picked, as its own panel under the tree: it comes with a selection and goes with it. */}
-    {/* Not folded away: its X clears the selection, and its Copy (the heading's action) copies the reference on show. */}
-    {hasDetails ? <ToolPanel id="reference" title={referenceTitle || 'Reference'} label="Reference details" closeLabel="Clear selection" fit="details" widthFrom="tree" maxHeight={TOOL_PANEL_REFERENCE_HEIGHT}
-      collapsible={false} actions={selectionDetails?.actions} hidden={!active} onClose={clearSelection}>
+    {/* What is picked, as its own panel under the tree: it comes with a selection and goes with it,
+        and is sized on its own, apart from the tree. Not folded away: its X clears the selection,
+        and the Copy at its foot copies the whole selection (Copy All, with several references). */}
+    {hasDetails ? <ToolPanel id="reference" title={referenceTitle || 'Reference'} label="Reference details" closeLabel="Clear selection" fit="details" resizable
+      collapsible={false} hidden={!active} onClose={clearSelection}
+      footer={selectionCopy ? <ToolPanelFooterButton label={selectionCopy.label} shortcut={mobile ? '' : selectionCopy.shortcut}
+        disabled={disabled} onClick={selectionCopy.onCopy}/> : null}>
       <div className="px-2 pb-1.5">{details}</div>
     </ToolPanel> : null}
   </>;

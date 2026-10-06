@@ -50,6 +50,19 @@ test("compile failure preserves the full diagnostic, context and useful recovery
   assert.match(alert.recovery, /rebuild/);
 });
 
+test("a file another program holds is said to be unreadable, not broken (#529)", () => {
+  const reason = "[Errno 13] Permission denied: 'C:\\Users\\ada\\STEP\\moonwatch.step'";
+  const alert = buildViewerMeshAlert(step, false, "", {
+    status: "failed", error: reason, failure: { kind: "compile", errorType: "PermissionError" }
+  });
+  assert.equal(alert.title, "Couldn’t read the model");
+  assert.match(alert.message, /moonwatch\.step.*could not be read/);
+  assert.equal(alert.reason, reason);
+  assert.match(alert.recovery, /Another program may have it open/);
+  assert.doesNotMatch(alert.recovery, /rebuild/);
+  assert.equal(alert.reload, true);
+});
+
 test("missing compiler diagnostic is stated honestly", () => {
   const alert = buildViewerMeshAlert(step, false, "", { status: "failed", error: "" });
   assert.match(alert.reason, /No diagnostic was returned/);
@@ -125,34 +138,39 @@ test("missing geometry gives file context and a next step", () => {
   assert.equal(buildViewerMeshAlert(null, false, "failure"), null);
 });
 
-test("edit alerts keep disconnects and healthy preview expiry quiet", () => {
-  assert.equal(buildViewerEditAlert({ state: "disconnected", error: "Connection closed" }, false, false), null);
-  assert.equal(buildViewerEditAlert({
-    state: "done",
-    error: "Preview geometry is no longer available in the cache",
-    previewUnavailable: true,
-    saved: { tree: "saved" }
-  }, false, true), null);
-
-  const blocked = buildViewerEditAlert({
-    state: "done",
-    error: "Preview geometry is no longer available in the cache",
-    previewUnavailable: true
-  }, false, false);
-  assert.equal(blocked.summary, "Open failed");
-  assert.equal(blocked.blocking, undefined);
+test("a compiled status settled over an entry naming no tree is no geometry, or a failed update of the model on screen", () => {
+  // The row the server keeps for a store it cannot read whole: no hash, a URL naming no tree, and an
+  // artifact status that has settled as compiled over it (`useArtifact`).
+  const unbuilt = { file: "STEP/pair.step", kind: "part", url: "/__cad/store?file=unbuilt-pair", hash: "", documentHash: "d1" };
+  const settled = { status: "compiled", settled: true, error: "", failure: null };
+  assert.equal(buildViewerMeshAlert(unbuilt, false, "", settled).summary, "Mesh unavailable");
+  // The previous version kept on screen through the rewrite: the update failed, the model survives.
+  const kept = buildViewerMeshAlert(unbuilt, true, "", settled);
+  assert.equal(kept.blocking, false);
+  assert.equal(kept.title, "Couldn’t update the model");
+  assert.match(kept.message, /pair\.step.*previous version/);
+  assert.equal(kept.reload, true);
+  // Not before the status settles, and not over a model still arriving.
+  assert.equal(buildViewerMeshAlert(unbuilt, true, "", { ...settled, settled: false }), null);
+  assert.equal(buildViewerMeshAlert(unbuilt, true, "", settled, { partial: true }), null);
 });
 
-test("a failed save explains that the updated model is visible and keeps the diagnostic", () => {
+test("only a failed build the file has not moved past raises an alert", () => {
+  assert.equal(buildViewerEditAlert({ state: "disconnected", error: "Connection closed" }, false), null);
+  assert.equal(buildViewerEditAlert({ state: "building" }, true), null);
+  assert.equal(buildViewerEditAlert({ state: "done" }, true), null);
+  assert.equal(buildViewerEditAlert({ state: "failed", superseded: true, error: "" }, true), null);
+});
+
+test("a failed build over the model on screen keeps it and the diagnostic", () => {
   const alert = buildViewerEditAlert({
     state: "failed",
     error: "Disk full\nwrite trace",
     file: "STEP/moonwatch.step",
     revision: 8
-  }, true, true);
+  }, true);
   assert.equal(alert.summary, "Update failed");
-  assert.equal(alert.message, "The updated model is visible, but the STEP file could not be written.");
-  assert.equal(alert.title, "Couldn’t write the STEP file");
+  assert.equal(alert.message, "The latest update couldn’t be loaded. You’re still viewing the previous version.");
   assert.equal(alert.blocking, false);
   assert.equal(alert.reason, "Disk full\nwrite trace");
   assert.match(alert.details, /Revision: 8/);
@@ -162,14 +180,14 @@ test("edit worker failures are distinct from invalid-model failures", () => {
   const worker = buildViewerEditAlert({
     state: "failed",
     error: "artifact request failed or lost its protocol; no cold retry"
-  }, false, true);
+  }, true);
   assert.equal(worker.summary, "Viewer service failed");
   assert.equal(worker.kind, "service");
   assert.equal(worker.blocking, false);
   assert.equal(worker.reason, undefined);
   assert.match(worker.details, /no cold retry/);
 
-  const invalid = buildViewerEditAlert({ state: "failed", error: "Fillet radius is too large" }, false, false);
+  const invalid = buildViewerEditAlert({ state: "failed", error: "Fillet radius is too large" }, false);
   assert.equal(invalid.summary, "Open failed");
   assert.match(invalid.recovery, /correct the model/i);
   assert.equal(invalid.reason, "Fillet radius is too large");

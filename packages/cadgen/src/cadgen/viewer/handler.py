@@ -17,6 +17,7 @@ bottleneck was never component fetch — it is client-side tessellation.
 from __future__ import annotations
 
 import socket
+import socketserver
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -31,6 +32,9 @@ __all__ = ["CadHTTPServer", "make_handler_class", "MAX_REQUEST_BODY_BYTES"]
 MAX_REQUEST_BODY_BYTES = 256 * 1024 * 1024
 
 _ALLOWED_METHODS = ("GET", "HEAD", "POST")
+
+# How long a closing connection waits for each piece of a body its route never read (`_linger`).
+LINGER_SECONDS = 1.0
 
 
 class CadHTTPServer(ThreadingHTTPServer):
@@ -51,6 +55,13 @@ class CadHTTPServer(ThreadingHTTPServer):
     def __init__(self, address, handler_class, app):
         self.app = app
         super().__init__(address, handler_class)
+
+    def server_bind(self):  # noqa: D102
+        # Not HTTPServer's: it names the host by reverse DNS (socket.getfqdn),
+        # which waits 35 s where no resolver answers (GitHub's Macs) — all of it
+        # before the URL line. Nothing reads the name.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
     def handle_error(self, request, client_address):  # noqa: D102
         # A client that hangs up mid-stream is routine, not an incident. Only
@@ -159,6 +170,23 @@ def make_handler_class(app):
                     return
                 remaining -= len(chunk)
 
+        def _linger(self) -> None:
+            """Read the rest of a body before a closing connection closes.
+
+            A socket closed with bytes unread is reset, not closed, and a reset
+            takes the answer just sent with it: the client of a route that
+            refused a body unread (a 413) loses the 413 -- on Windows even for
+            a small body, and anywhere once the body is big enough that the
+            client is still writing it. So what is left is read first, for as
+            long as the client keeps sending, and a client that stops is let go
+            after ``LINGER_SECONDS``: it is closing either way.
+            """
+            try:
+                self.connection.settimeout(LINGER_SECONDS)
+                self._drain_body()
+            except OSError:  # a client that stopped sending (a timeout) or went away
+                self.close_connection = True
+
         # --- dispatch ------------------------------------------------------
 
         def _raw_target(self) -> str:
@@ -228,8 +256,11 @@ def make_handler_class(app):
                 self.close_connection = True
                 raise
             finally:
-                if not request.body_was_read and not self.close_connection:
-                    self._drain_body()
+                if not request.body_was_read:
+                    if self.close_connection:
+                        self._linger()
+                    else:
+                        self._drain_body()
 
         def do_GET(self):  # noqa: N802
             self._dispatch()

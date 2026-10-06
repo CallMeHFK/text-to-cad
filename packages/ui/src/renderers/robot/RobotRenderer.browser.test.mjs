@@ -85,7 +85,7 @@ let server, browser, temporary;
 let revision = 1;
 before(async () => {
   temporary = await mkdtemp(join(tmpdir(), 'text-to-cad-robot-browser-'));
-  await build({ entryPoints: [fileURLToPath(new URL('../harness/index.tsx', import.meta.url))], outfile: join(temporary, 'harness.js'), bundle: true, format: 'esm', platform: 'browser', conditions: ['production'], jsx: 'automatic', loader: { '.webp': 'dataurl', '.avif': 'dataurl', '.woff2': 'dataurl' } });
+  await build({ entryPoints: [fileURLToPath(new URL('../harness/index.tsx', import.meta.url))], outfile: join(temporary, 'harness.js'), bundle: true, format: 'esm', platform: 'browser', conditions: ['production'], jsx: 'automatic', loader: { '.webp': 'dataurl', '.avif': 'dataurl', '.woff2': 'dataurl', '.svg': 'dataurl' } });
   const bundle = await readFile(join(temporary, 'harness.js'));
   const css = await readFile(new URL('../../../dist/styles.css', import.meta.url));
   server = createServer((request, response) => {
@@ -95,12 +95,12 @@ before(async () => {
     if (url.pathname === '/harness.js') { response.setHeader('Content-Type', 'text/javascript'); response.end(bundle); }
     else if (url.pathname === '/styles.css') { response.setHeader('Content-Type', 'text/css'); response.end(css); }
     else if (url.pathname.endsWith('/__cad/catalog')) {
-      const entry = file => ({ kind: file.split('.').pop(), file, rootRelativeFile: file, url: `/${file}`, hash: `${root}-${file}-${revision}`, bytes: FILES[file].length });
+      const entry = file => ({ kind: file.split('.').pop(), file: `/models/${file}`, url: `/${file}`, hash: `${root}-${file}-${revision}`, bytes: FILES[file].length });
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ rootId: root, entries: Object.keys(FILES).filter(file => !file.startsWith('meshes/'))
+      response.end(JSON.stringify({ entries: Object.keys(FILES).filter(file => !file.startsWith('meshes/'))
         .map(file => (file === 'arm.srdf' ? { ...entry(file), relations: { urdf: entry('arm.urdf') } } : entry(file))) }));
     } else if (url.pathname.endsWith('/__cad/server')) {
-      response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ rootId: root, rootPath: '/models', backend: 'cadgen' }));
+      response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ backend: 'cadgen' }));
     } else if (FILES[name] ?? FILES[url.pathname.slice(1)]) { response.end(FILES[name] ?? FILES[url.pathname.slice(1)]); }
     else if (/\.(woff2|ttf|stl|glb)$/.test(url.pathname)) { response.statusCode = 404; response.end(); }
     else { response.setHeader('Content-Type', 'text/html'); response.end(`<!doctype html><html><head><title>Host</title><link rel="stylesheet" href="/styles.css">${HARNESS_SIZE}</head><body><div id="root"></div><script type="module" src="/harness.js"></script></body></html>`); }
@@ -169,10 +169,10 @@ async function open(t, file, { panel = true } = {}) {
     },
     // A selection is React state: it is on screen a render after whatever changed it.
     waitPressed: count => page.waitForFunction(wanted => document.querySelectorAll('[data-testid="one"] [aria-label="Robot tree area"] button[aria-pressed="true"]').length === wanted, count),
-    // The nav row's panel toggles, in order, each with whether its panel is the open one.
-    panels: () => pane.locator('[data-file-panel]')
-      .evaluateAll(buttons => buttons.map(button => `${button.getAttribute('aria-label')}:${button.getAttribute('aria-pressed')}`)),
-    toggle: id => id === 'cad-display' ? pane.getByRole('button', { name: 'Display settings', exact: true }) : pane.locator(`[data-file-panel="${id}"]`),
+    // Display: its button on top of the cube, beside Preview.
+    displayButton: () => pane.locator('[data-viewport-actions]').getByRole('button', { name: 'Display', exact: true }),
+    // Display's settings: a dropdown from on top of the cube, portaled out of the viewer.
+    displayPanel: () => page.locator('[data-display-popover]'),
     // The tool stack's panels on screen, top to bottom, by their accessible names.
     stack: () => pane.locator('[data-cad-tool-stack] [data-tool-panel]').evaluateAll(panels => panels
       .filter(panel => panel.getClientRects().length > 0).map(panel => panel.getAttribute('aria-label'))),
@@ -224,10 +224,8 @@ test('a robot can enter Position with sidebar controls: knobs drag joints, the c
   assert.equal(await robot.tool('Draw').count(), 0, 'Draw is a STEP tool; a robot description has none');
   assert.equal(await robot.tool('Preview').count(), 0, 'Preview is no toolbar tool');
   assert.equal(await pane.getByRole('button', { name: 'Preview', exact: true }).count(), 1, 'it is the viewer’s corner button, for a robot as for any 3D file');
-  // The nav row has the file tree's toggle alone: a robot declares no panel of its own. Display
-  // is the settings button beside Preview.
-  assert.deepEqual(await robot.panels(), ['Show files:false']);
-  assert.equal(await pane.page().locator('[data-display-popover]').count(), 0, 'Display is never where a file opens');
+  // Display is the button beside Preview, shut as the file opens.
+  assert.equal(await robot.displayPanel().count(), 0, 'Display is never where a file opens');
   assert.equal(await pane.getByRole('tab').count(), 0, 'no tabs');
   assert.deepEqual(await robot.stack(), ['Position controls']);
   // Headed "Position", with its Reset and the fold chevron in the heading.
@@ -458,7 +456,7 @@ test('Select picks links at once; a selection lives only under Select; Links sho
   assert.equal(await reference.getByRole('heading').innerText(), 'upper_arm');
   const [links, pinned] = await Promise.all([robot.linksPanel().boundingBox(), reference.boundingBox()]);
   assert.ok(pinned.y >= links.y + links.height, 'under Links');
-  assert.equal(pinned.width, links.width, 'the stack\'s one width');
+  assert.equal(pinned.width, links.width, 'the one width, until a person sizes either');
   // A link's facts are in the panel's one face and size, never monospace, in compact rows.
   const faces = await reference.locator('[data-tool-panel-body] *').evaluateAll(nodes => [...new Set(nodes
     .filter(node => !node.childElementCount && node.textContent.trim())
@@ -466,22 +464,28 @@ test('Select picks links at once; a selection lives only under Select; Links sho
   assert.equal(faces.length, 1, `one face and size: ${faces.join(' / ')}`);
   assert.doesNotMatch(faces[0], /mono/i);
   assert.ok((await reference.locator('[data-info-row]').first().boundingBox()).height <= 19, 'a compact row');
-  // Links folds to its filter row by the chevron at that row's end, and its Reference keeps its place under it.
+  // Links closes by the X at its filter row's end, and the Reference moves up into its place;
+  // Select, pressed while it is the tool, opens Links again with its selection.
   const linksPanel = robot.linksPanel();
-  const filterRow = linksPanel.locator('[data-slot=tree-filter]');
-  await filterRow.getByRole('button', { name: 'Collapse links', exact: true }).click();
-  assert.ok(Math.abs((await linksPanel.boundingBox()).height - (await filterRow.boundingBox()).height - 2) <= 1, 'folded to its filter row');
-  assert.ok((await reference.boundingBox()).y < pinned.y, 'the Reference moves up under it');
-  await filterRow.getByRole('button', { name: 'Expand links', exact: true }).click();
-  await robot.pressed(['Select upper_arm'], 'the tree kept its selection while folded');
+  await linksPanel.locator('[data-slot=tree-filter]').getByRole('button', { name: 'Close links', exact: true }).click();
+  await linksPanel.waitFor({ state: 'hidden' });
+  assert.deepEqual(await robot.stack(), ['Reference details']);
+  assert.ok((await reference.boundingBox()).y < pinned.y, 'the Reference moves up into its place');
+  await robot.tool('Select').click();
+  await linksPanel.waitFor();
+  await robot.pressed(['Select upper_arm'], 'the tree kept its selection while closed');
   // Leaving Select drops the selection, in the tree and the viewport alike.
   await robot.tool('Position').click();
   await robot.waitPressed(0);
   assert.equal(await robot.linksPanel().isVisible(), false, 'and Position shows its own panel instead');
-  // Display is a popover over the viewer, never a panel in the stack: Position's panel stays.
-  await robot.toggle('cad-display').click();
-  await page.locator('[data-display-popover]').waitFor();
+  // Display is a dropdown over the viewer, never a panel in the stack: Position's panel stays, and
+  // Position stays the tool; a second press puts it away.
+  await robot.displayButton().click();
+  await robot.displayPanel().waitFor();
   assert.deepEqual(await robot.stack(), ['Position controls']);
+  assert.deepEqual(await robot.toolNames(), ['Select:false', 'Position:true']);
+  await robot.displayButton().click();
+  await robot.displayPanel().waitFor({ state: 'detached' });
 
   // A viewport pick under Select: the link is selected on the very next frame (no wait for
   // a double-click that robots do not have), and its row is pressed in the Links panel.
@@ -501,7 +505,6 @@ test('Select picks links at once; a selection lives only under Select; Links sho
   await page.mouse.down(); await page.mouse.up();
   await robot.settle();
   assert.deepEqual(await robot.pressedRows(), ['Select upper_arm'], 'selected by the next frame');
-  assert.deepEqual(await robot.panels(), ['Show files:false'], 'a pick opens nothing in the host\'s column');
   assert.deepEqual((await page.evaluate(() => window.cadHarness.a.controller.readState())).selectedLinks, ['upper_arm']);
   // The shared camera bar provides zoom framing for robots too.
   assert.equal(await pane.getByRole('button', { name: 'Zoom controls', exact: true }).count(), 0);
@@ -534,10 +537,11 @@ test('Select picks links at once; a selection lives only under Select; Links sho
   await robot.pressed(['Select antenna', 'Select visor']);
   assert.deepEqual((await page.evaluate(() => window.cadHarness.a.controller.readState())).selectedPartIds.sort(), ['head:v1/object/0', 'head:v1/object/1']);
 
-  // What names something else can be followed: a parent link selects it, a mesh path opens it.
+  // What names something else can be followed: a parent link selects it, a mesh path opens it,
+  // by its absolute path beside the description.
   await pane.getByRole('button', { name: 'Select head', exact: true }).click();
   await reference.getByRole('button', { name: 'meshes/head.glb' }).click();
-  assert.deepEqual(await page.evaluate(() => window.cadHarness.opened), ['meshes/head.glb']);
+  assert.deepEqual(await page.evaluate(() => window.cadHarness.opened), ['/models/meshes/head.glb']);
   await reference.getByRole('button', { name: 'base', exact: true }).first().click();
   await robot.pressed(['Select base']);
   // The filter finds a link by the joint that carries it.
@@ -553,7 +557,7 @@ test('Select picks links at once; a selection lives only under Select; Links sho
   assert.deepEqual(robot.errors, []);
 });
 
-test('a pose and the open panel survive closing the file, and a pose is dropped when the description changed', async (t) => {
+test('a reload of the tab brings the pose back, and nothing of the tool or the Display dropdown, and a pose is dropped when the description changed', async (t) => {
   const robot = await open(t, 'arm.urdf');
   const { page, pane } = robot;
   await robot.openPosition();
@@ -562,22 +566,24 @@ test('a pose and the open panel survive closing the file, and a pose is dropped 
   await robot.type('lift', 0.2, 'm');
   // The last write lands in the record although it was never rendered: the record reads the pose when it is written.
   await robot.type('nod', 12);
-  // The file closes with its Display settings open: they are not a tool, and the tool is not saved either.
-  await robot.toggle('cad-display').click();
-  await pane.page().locator('[data-display-popover]').waitFor();
+  // The page goes with its Display settings open: they are not a tool, and the tool is not saved either.
+  // The harness's unmount and remount keep the tab's record, as a reload does (the web's pagehide
+  // unmounts the viewer, and its sessionStorage outlives the page). Leaving the file for another, or
+  // for the home, drops its view instead: `cad-viewer/CadViewerFileViews.test.tsx`.
+  await robot.displayButton().click();
+  await robot.displayPanel().waitFor();
   await page.evaluate(() => window.cadHarness.mounted(false));
   await page.waitForFunction(() => Object.values(window.cadHarness.state.renderers || {}).some(record => record?.renderer?.pose?.value?.jointValues?.nod === 12));
-  const record = await page.evaluate(() => window.cadHarness.state.renderers[JSON.stringify(['arm.urdf', 'robot'])]);
+  const record = await page.evaluate(() => window.cadHarness.state.renderers[JSON.stringify(['/models/arm.urdf', 'robot'])]);
   assert.deepEqual([record.renderer.pose.value.jointValues.shoulder, record.renderer.pose.value.jointValues.lift], [25, 0.2]);
   assert.deepEqual(Object.keys(record.renderer), ['pose'], 'one slice: the pose, and no selection or tree');
   assert.equal('tool' in record, false, 'the view keeps no tool');
   assert.match(record.renderer.pose.signature, /arm\.urdf-1$/);
   await page.evaluate(() => window.cadHarness.mounted(true));
-  // The tool is never saved: the file reopens in Select, Display shut.
+  // The tool is never saved: the reloaded file opens in Select, Display shut.
   await robot.linksPanel().waitFor();
   assert.deepEqual(await robot.toolNames(), ['Select:true', 'Position:false']);
-  assert.equal(await pane.page().locator('[data-display-popover]').count(), 0, 'it reopens with Display shut');
-  assert.deepEqual(await robot.panels(), ['Show files:false']);
+  assert.equal(await robot.displayPanel().count(), 0, 'it comes back with Display shut');
   await robot.openPosition();
   await robot.jointField('shoulder').waitFor();
   assert.deepEqual([await robot.jointField('shoulder').inputValue(), await robot.jointField('lift', 'm').inputValue(), await robot.jointField('nod').inputValue()], ['25°', '0.2 m', '12°']);
@@ -585,7 +591,8 @@ test('a pose and the open panel survive closing the file, and a pose is dropped 
   const links = await robot.links();
   assert.equal(round6(translation(links.carriage)[2]), 0.35, 'and the robot on screen is in that pose');
 
-  // A new revision behind the mounted robot keeps the pose it is in; a record from another revision is not restored.
+  // A record written against another revision is not restored. (A new revision behind the mounted robot
+  // keeps its pose only while its joints and named poses are unchanged: `RobotTools.test.tsx`.)
   await page.evaluate(() => window.cadHarness.mounted(false));
   revision += 1;
   t.after(() => { revision = 1; });
@@ -605,7 +612,6 @@ test('an SDF is the same robot with a section of its own; a snapshot depicts the
   assert.deepEqual(await robot.toolNames(), ['Select:false', 'Position:true']);
   // The same panels as any robot, whatever the format on disk: SDF is a panel of Select's, under
   // Links (what the description says about itself sits with its links), folded until opened.
-  assert.deepEqual(await robot.panels(), ['Show files:false']);
   assert.deepEqual(await robot.stack(), ['Position controls']);
   await robot.tool('Select').click();
   assert.deepEqual(await robot.stack(), ['Links', 'SDF']);
@@ -618,9 +624,9 @@ test('an SDF is the same robot with a section of its own; a snapshot depicts the
   await robot.type('hinge', 40);
   const links = await robot.links();
   assert.equal(round6(translation(links.arm)[2]), round6(0.2 - 0.05 * Math.sin((40 * Math.PI) / 180)));
-  // The Display menu offers no Edges, Cross-section or Explode.
-  await robot.toggle('cad-display').click();
-  const displayMenu = pane.page().locator('[data-display-popover]');
+  // Display offers no Edges, Cross-section or Explode.
+  await robot.displayButton().click();
+  const displayMenu = robot.displayPanel();
   for (const absent of ['Edges', 'Cross-section', 'Explode']) assert.equal(await displayMenu.getByRole('heading', { name: absent, exact: true }).count(), 0, absent);
   await displayMenu.getByRole('combobox', { name: 'Mode', exact: true }).click();
   assert.deepEqual(await page.getByRole('option').allInnerTexts(), ['Solid', 'Render', 'Grid']);
@@ -628,16 +634,16 @@ test('an SDF is the same robot with a section of its own; a snapshot depicts the
   await displayMenu.getByRole('combobox', { name: 'Projection', exact: true }).click();
   assert.deepEqual(await page.getByRole('option').allInnerTexts(), ['Orthographic', 'Perspective']);
   await page.keyboard.press('Escape');
-  await robot.toggle('cad-display').click();
+  await robot.displayButton().click();
   await displayMenu.waitFor({ state: 'detached' });
   // Display was never the tool: Position was in hand throughout, and still is.
   assert.deepEqual(await robot.toolNames(), ['Select:false', 'Position:true']);
   await robot.openPosition();
 
-  await pane.getByRole('button', { name: 'Take snapshot', exact: true }).click();
+  await page.evaluate(() => window.cadHarness.capture());
   await page.waitForFunction(() => window.cadHarness.captures.length === 1);
   const captured = await page.evaluate(() => window.cadHarness.captures[0]);
-  assert.deepEqual([captured.file, captured.type, captured.references.length], ['swing.sdf', 'image/png', 1], 'one context, of the file');
+  assert.deepEqual([captured.file, captured.type, captured.references.length], ['/models/swing.sdf', 'image/png', 1], 'one context, of the file');
 
   assert.deepEqual(robot.errors, []);
 });

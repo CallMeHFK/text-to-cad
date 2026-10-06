@@ -28,7 +28,11 @@ display concern only.
 
 Assemblies with at least 64 unique components can start at a coarser display
 tessellation when standard meshes are not cached. Cached standard meshes are
-preferred immediately, subject to their probed decode size and admission.
+preferred immediately, subject to their probed decode size and admission. The
+tiers are probed a chunk of components at a time and the cached bodies read a
+batch at a time (`createInitialDisplayPlans`, `packageBatchReads.js`), the first
+of each the size of the first publish, so the first geometry waits on no more
+than it draws.
 Smaller assemblies start at the standard level, except that an individually
 oversized component may start coarse. A component above the concurrent decode
 cap runs alone only when the shared Viewer memory envelope can reserve its
@@ -136,11 +140,18 @@ Every publication lands in the ONE STEP scene the viewport adopted
 the same model, the live build reconciles its records in place, and the viewport
 is told the scene changed (`viewport.commitScene()`) rather than handed a new
 scene — so a progressive open or a detail swap never re-dresses every material or
-re-adopts anything. The scene is `complete: false` until the last component is
-in, which is what frames the model on its first publish and once more when it is
-whole. The camera sample that drives all of this is taken when the viewport says
-the camera settled (`onCameraSettled`: a move, a preview orbit, or a resize,
-which can expose a part without moving the camera) and when the selection changes.
+re-adopts anything. The camera frames the model once, on its first publish, on
+the box `assembly.json` declares for the whole of it (`bbox`, carried as the
+composition's `declaredBounds`): the scene's `restBounds` is that box from the
+start, so the framing, the orbit pivot, the zoom ruler, Zoom to fit, preview's
+turntable and the ground's size are final before most components have arrived,
+and later publishes move none of them. A descriptor without a box leaves the
+scene `complete: false` until the last component is in: it is framed on what
+arrived first and once more when it is whole, unless the person has taken the
+camera by then. The camera sample that drives all of this is taken when the
+viewport says the camera settled (`onCameraSettled`: a move, a preview orbit, or
+a resize, which can expose a part without moving the camera) and when the
+selection changes.
 
 A static component publication can reuse the main adoption's completed reset
 only in that same React render. Later visual or clipping changes still run
@@ -195,7 +206,10 @@ the daemon must be running for live updates.
 **The feed.** Updates arrive through a held request that wakes when this
 output's build ledger changes. Unrelated jobs do not wake the tab. The server
 admits 32 waiters independently of kernel workers; excess tabs retry every
-500 ms. An idle heartbeat revalidates saved bytes and missing geometry; closing
+500 ms. A server that answers at once instead (a host relaying requests through a
+few slots all its views share, where a held request would take one) is paced by the feed: an answer
+with nothing new waits out the rest of a second, and news is asked after again
+within a tenth of one. An idle heartbeat revalidates saved bytes and missing geometry; closing
 or switching the tab cancels the request. Older status responses cannot
 overwrite newer cached progress, and saved revisions are verified from one
 coherent file snapshot. Restarting the daemon expires the ephemeral session,
@@ -203,13 +217,20 @@ and rerunning the model reconnects it.
 
 **What stays on screen.** The prior model stays visible while the next request
 builds; failed updates remain visible while an idle disconnected feed retries
-quietly. Complete plain STEP assemblies also remain visible while replacement
-meshes load. Complete displayed component arrays remain available while a
+quietly. A complete model of the same file — a part's or an assembly's — also
+remains visible while its rewritten file is rebuilt and while the replacement
+meshes load (`replacingSameFileMesh`, `awaitingSameFileRevision`), reported as an
+update ("Updating model…"), never as the loading screen — also when edits come
+faster than revisions load, and one revision's load is cancelled for the next
+(`meshStateAfterCancelledLoad`). Complete displayed component arrays remain available while a
 replacement stages or fails. Reuse requires the same runtime surface input,
 concrete surface object and tessellation; placements and appearance come from
 the new tree. Selection, measurements and reference copying wait for matching
 new geometry. A failed replacement preserves the view and reports its error;
-only that file/hash stops retrying automatically. STEP pose and animation
+only that file/hash stops retrying automatically. A first load that fails part
+way keeps the parts it drew under its error, and refinement goes on over them: a
+detail swap changes geometry only, never whether the load finished or failed
+(`detailSwapMeshState`). STEP pose and animation
 metadata use their normal loading path, without a promise to retain the
 previous pose. Snapshot source isolation is unchanged.
 
@@ -218,21 +239,19 @@ independently; a superseded request cannot cancel its replacement. Topology
 requests for one file revision union rather than supersede: a batch in flight
 finishes, and one no longer wanted is simply not published.
 
-**After a save.** Source files hold the authored changes; there is no hidden
-durable preview document, and every explicit model run still waits for its
-declared outputs. A successful save leaves that revision's authored preview
-displayed, with nothing announced. A later successful no-op run without a new
-preview, or an expired preview with a validated saved result, uses the saved
-file instead.
+**After a save.** The view shows the saved file. When a build writes it, the new
+revision replaces the one on screen in place, keeping every component whose identity
+it shares; while the build runs the model on screen says it is updating, and a failed
+build leaves it on screen under its alert.
 
-**What the viewport shows.** The breadcrumb carries no status. Opening and
+**What the viewport shows.** The navbar carries no status. Opening and
 updating are the viewport's loading overlay (`ViewerLoadingOverlay`). A failure is
 a card over the viewport (`kit/status/ViewerAlertCard.jsx`) with its explanation,
 its next step and the full diagnostic under Details: an error always shows, and a
 failed update the model survives (`blocking: false`, the previous version still on
 screen) has a Dismiss button and stays dismissed until the alert changes, or
-clears and is raised again. A warning is a card only while nothing is on screen;
-beside a model, a STEP lists it in its panel's Issues. Once a
+clears and is raised again. A warning is a card too, one that can be dismissed
+while the model is on screen: the card is the one place a problem is said. Once a
 usable current view is displayed, saving, successful completion, idle edit-feed
 state and routine refinement stay quiet. A sidecar this build cannot read raises
 no alert: the model renders with no kinematics, no materials and no routine, and

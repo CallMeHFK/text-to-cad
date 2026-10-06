@@ -150,6 +150,17 @@ class _PendingListener:
         self.close_thread = threading.get_ident()
 
 
+class ConnectTest(unittest.TestCase):
+    # A daemon exiting (its version changed, or it idled out) can take a connection and close it
+    # mid-handshake. That is no daemon, as a refused connection is: the caller spawns or waits for
+    # the successor. An EOFError used to escape that path and fail the request outright (the
+    # viewer's "Surface derivation failed").
+    def test_a_daemon_closing_the_connection_while_it_opens_is_no_daemon(self):
+        with mock.patch.object(transport.mpc, "Client", side_effect=EOFError()):
+            with self.assertRaises(OSError):
+                transport.connect("cadgen-test.sock", b"key")
+
+
 class ServerShutdownTest(unittest.TestCase):
     def accept_in_thread(self, listener):
         results, errors = [], []

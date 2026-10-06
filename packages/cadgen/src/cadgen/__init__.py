@@ -1,5 +1,6 @@
 """Shared CAD artifact generation runtime."""
 
+from functools import cache as _cache
 from typing import TYPE_CHECKING
 
 # Before anything imports build123d, which every cadgen entry point eventually does:
@@ -31,7 +32,6 @@ __all__ = [
     "stl",
     "glb",
     "threemf",
-    "memo",
     "revolute",
     "slider",
     "cylindrical",
@@ -46,7 +46,6 @@ __all__ = [
     "StepScene",
     "Occurrence",
     "Selection",
-    "declare_input",
     "ensure_step_topology_artifact",
     "label_text",
     "label_shape",
@@ -57,10 +56,6 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    if name == "memo":
-        from cadgen.memoization import memo
-
-        return memo
     if name in {"step", "dxf", "stl", "glb", "threemf"}:
         # A FORMAT NAMESPACE: the declaration decorator and the format's verbs in
         # one callable module (design/format-doors.md). Returning the module
@@ -101,13 +96,6 @@ def __getattr__(name: str):
         from cadgen import step_scene
 
         return getattr(step_scene, name)
-    if name == "declare_input":
-        # The declaration for a file cadgen has no reader for (a JSON atlas, a
-        # CSV table): the model reads it, this records it. `read_step`'s
-        # freshness contract, one format over.
-        from cadgen.inputs import declare_input
-
-        return declare_input
     if name in {"srgb", "srgb_to_linear", "linear_to_srgb"}:
         from cadgen import color
 
@@ -139,8 +127,6 @@ if TYPE_CHECKING:
         linear_to_srgb as linear_to_srgb,
         srgb_to_linear as srgb_to_linear,
     )
-    from cadgen.inputs import declare_input
-    from cadgen.memoization import memo
     from cadgen.kinematics import couple, cylindrical, fastened, revolute, slider
     from cadgen.instances import compound_from_instances
     from cadgen.progress import report, track
@@ -154,6 +140,7 @@ if TYPE_CHECKING:
     from cadgen.step_topology_artifact import ensure_step_topology_artifact
 
 
+@_cache
 def _resolve_version() -> str:
     """The installed distribution version, falling back to pyproject in a source tree.
 
@@ -161,6 +148,10 @@ def _resolve_version() -> str:
     what `cadgen doctor` compares a skill's pinned requirement against. A bare source checkout
     has no metadata, so fall back to the pyproject this file ships beside — release
     tooling stamps it from the canonical VERSION, so the two never disagree.
+
+    Resolved once per process. The lookup lists every folder on ``sys.path``, and a
+    build puts the model's own folder there, which every save changes; the code that
+    answers cannot change under a running process anyway.
     """
     from importlib.metadata import PackageNotFoundError, version
 

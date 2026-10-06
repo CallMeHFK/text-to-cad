@@ -24,7 +24,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SKILLS_ROOT = REPO_ROOT / "skills"
 PLUGIN_README_PATH = REPO_ROOT / ".qwenpaw-plugin" / "README.md"
-DOCS_PAGE_PATH = REPO_ROOT / "apps" / "docs" / "src" / "app" / "page.tsx"
+DOCS_PAGE_PATH = REPO_ROOT / "apps" / "docs" / "src" / "lib" / "content.ts"
 PLUGIN_ENTRY_PATH = REPO_ROOT / ".qwenpaw-plugin" / "plugin.py"
 
 # A catalog row's first cell: "| `skill-name` | ...".

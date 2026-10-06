@@ -2,8 +2,8 @@ import type { TessellationCache } from '../lib/surf/cacheTypes.js';
 export type { TessellationCache, TessellationCacheEntry, TessellationCacheProvider, TessellatedComponent, TessellationOptions } from '../lib/surf/cacheTypes.js';
 export type CadJson = null | boolean | number | string | CadJson[] | { [key: string]: CadJson };
 export interface CadEntry {
+  /** The file's absolute path, `/`-separated. */
   file: string;
-  rootRelativeFile?: string;
   kind?: string;
   format?: string;
   sourceFormat?: string;
@@ -14,28 +14,47 @@ export interface CadEntry {
   [key: string]: unknown;
 }
 export interface CadServerInfo {
-  rootId: string;
   autoReload?: boolean;
   identityToken?: string;
-  rootPath?: string;
-  rootDir?: string;
-  backend?: string;
+  /** The folder the server was started in, where a developer's relative `?file=` resolves. */
+  start?: string;
+  /** Whether this computer has a file chooser for the home's Open. */
+  pick?: boolean;
+  /** `darwin`, `win32` or `linux`: which file manager Reveal opens. */
+  platform?: string;
   [key: string]: unknown;
 }
-export interface CadCatalog { entries: CadEntry[]; rootId?: string; [key: string]: unknown }
+/** A model in the library every CAD view shares (`GET /__cad/recents`): times in seconds. */
+export interface CadRecent {
+  path: string; name: string; folder: string; opened: number;
+  /** When the file last changed; null once it is gone. */
+  modified: number | null;
+  pinned: boolean; missing: boolean;
+  /** The picture's name, for `thumbnail()`, and when it was taken. */
+  thumbnail: string | null; pictured: number | null;
+}
+/** The person's analytics answer, and whether to ask (`/__cad/analytics`): `reason` says who decided. */
+export interface CadConsent { ask: boolean; sharing: boolean; reason: 'unasked' | 'choice' | 'environment' | 'unavailable'; policy: string }
+/** A newer text-to-cad, as cadgen's version check says it (`/__cad/version`). */
+export interface CadUpdateNotice { latest: string; version: string; text: string; prompt: string; instructions: string }
+export interface CadCatalog { entries: CadEntry[]; [key: string]: unknown }
+/** One folder's subfolders and CAD files (`GET /__cad/folder`). */
+export interface CadFolder { path: string; entries: { name: string; kind: 'directory' | 'file' }[]; truncated: boolean }
+/** The CAD files nested under a folder whose path below it holds the query (`GET /__cad/search`). */
+export interface CadSearch { path: string; results: string[]; truncated: boolean }
 export interface CadCatalogSnapshot {
   entries: CadEntry[];
   revision: number;
   hydrated: boolean;
   refreshing: boolean;
   error: string;
-  rootId: string;
+  /** The server's digest of the last catalog applied ('' before one is): what a change watcher compares. */
+  catalogRevision: string;
 }
 export interface CadRequestOptions { signal?: AbortSignal }
 export interface CadArtifactResult {
   ok?: boolean;
-  state: 'rendered' | 'not-compiled' | 'compiling' | 'failed';
-  catalog?: CadCatalog;
+  state: 'compiled' | 'not-compiled' | 'compiling' | 'failed';
   error?: string;
   [key: string]: unknown;
 }
@@ -94,19 +113,7 @@ export interface CadSurfaceResponse {
   viewId: string; job?: string; replacementView?: CadRuntimeView;
   components: Record<string, {state: 'pending' | 'ready' | 'failed'; surfaceInput: string; surfaceObject?: string; url?: string; byteLength?: number; job?: string; error?: string; code?: string}>;
 }
-export interface CadPreviewGeometry {
-  tree: string;
-  url: string;
-  kind?: string;
-  revision?: number;
-  sequence: number;
-  kinematics?: CadJson;
-  appearance?: CadJson;
-  appearanceHash?: string;
-  animation?: CadJson;
-  animationHash?: string;
-}
-export interface CadSavedArtifact { tree: string; documentHash: string; revision?: number }
+/** What a build of a STEP file is doing: status only. The viewer always shows the saved file. */
 export interface CadEditingPreview {
   feedCursor?: string;
   feedLimited?: boolean;
@@ -119,9 +126,8 @@ export interface CadEditingPreview {
   error?: string;
   output?: string;
   file?: string;
-  previewUnavailable?: boolean;
-  preview?: CadPreviewGeometry | null;
-  saved?: CadSavedArtifact | null;
+  /** The file changed after this build finished: its failure is no longer the news. */
+  superseded?: boolean;
 }
 export interface CadPreviewObserverOptions {
   schedule?: typeof globalThis.setTimeout;
@@ -135,18 +141,41 @@ export interface CadRenderSession {
 }
 /** Domain service consumed by renderers; HTTP metadata stays on its adapter. */
 export interface CadWorkspaceService {
-  readonly workspaceId: string;
   getSnapshot(): CadCatalogSnapshot;
   subscribe(listener: () => void): () => void;
   refresh(options?: CadRequestOptions & {file?: string;markRefreshing?: boolean}): Promise<CadCatalog>;
   resolveEntry(path: string, options?: CadRequestOptions): Promise<CadEntry>;
   serverInfo(options?: CadRequestOptions & { fresh?: boolean }): Promise<CadServerInfo>;
+  folder(path: string, options?: CadRequestOptions): Promise<CadFolder>;
+  search(path: string, query: string, options?: CadRequestOptions): Promise<CadSearch>;
+  /** The home's library, newest first. */
+  recents(options?: CadRequestOptions): Promise<CadRecent[]>;
+  /** A change to the library (`open`, `pin`, `unpin`, `remove`, `thumbnail`): the library as it now is. */
+  changeRecents(change: { action: 'open' | 'pin' | 'unpin' | 'remove' | 'thumbnail'; path: string; png?: string }): Promise<CadRecent[]>;
+  /** Keep a model's picture in the library. */
+  keepThumbnail(png: Blob, path: string): Promise<CadRecent[]>;
+  /** A library picture, by the name the library gives it, as a data URL; null when there is none. */
+  thumbnail(name: string, options?: CadRequestOptions): Promise<string | null>;
+  /** Open: the model the person picks with the desktop's chooser, by its absolute path, or null. */
+  pick(): Promise<string | null>;
+  /** Show a file, by its absolute path, in the desktop's file manager. */
+  reveal(path: string): Promise<void>;
+  /** The person's analytics answer; with `share`, their answer (a card's counts only while the question is open). */
+  consent(share?: boolean, from?: 'card' | 'settings'): Promise<CadConsent>;
+  /** The features the person can turn off, as they left them; with `change`, their change of some. */
+  features(change?: Record<string, boolean>): Promise<Record<string, boolean>>;
+  /** Whether a newer text-to-cad is out: the update button's notice, or null. */
+  version(): Promise<{ notice: CadUpdateNotice | null }>;
+  /** What the page did (a person touched it): noted by the server, sent only with consent. Never fails. */
+  reportActivity(activity: { touched?: boolean }): void;
   requestArtifactStatus(file: string, options?: CadRequestOptions): Promise<CadArtifactResult>;
   requestArtifact(file: string, options?: CadRequestOptions & {force?: boolean}): Promise<CadArtifactResult>;
   /** A `.dxf` flattened to 2D render primitives on the server; the client never parses DXF. */
   drawing(file: string, options?: CadRequestOptions): Promise<CadDrawingPayload>;
   readonly resources: CadResourceProvider;
-  resolveSurfaceComponents(view: CadRuntimeView, requested: CadSurfaceComponentRequest[], options?: CadRequestOptions): Promise<Map<string, CadSurfaceTicket>>;
+  /** `onReady` hears each component as soon as its row is ready, while the rest are still awaited. */
+  resolveSurfaceComponents(view: CadRuntimeView, requested: CadSurfaceComponentRequest[],
+    options?: CadRequestOptions & { onReady?: (cid: string, ticket: CadSurfaceTicket) => void }): Promise<Map<string, CadSurfaceTicket>>;
   observeEditingPreview(file: string, onUpdate: (preview: CadEditingPreview) => void, onError: (error: unknown) => void, options?: CadPreviewObserverOptions): () => void;
   createRenderSession(options?: { file?: string }): CadRenderSession;
   dispose(): void;
@@ -161,9 +190,20 @@ export interface CadClient extends CadWorkspaceService {
 export interface CadClientOptions {
   resources?: CadResourceProvider;
   origin?: string;
-  workspaceId?: string;
   fetch?: typeof globalThis.fetch;
   pollIntervalMs?: number;
   /** Host visibility policy, evaluated at each polling interval. */
   shouldPoll?: () => boolean;
+  /**
+   * A file's build feed, from a host that already hears it on a call it makes anyway: the
+   * client then asks the preview route nothing. Returns the unsubscribe.
+   */
+  editingPreviewFeed?: (file: string, onUpdate: (preview: CadEditingPreview) => void, onError: (error: unknown) => void) => () => void;
+  /**
+   * The most bytes one batched read asks for over this client's `fetch`: a host whose channel
+   * carries large replies slowly declares a ceiling, and reads that batch (a package's warm
+   * tessellation bodies) stay within the lesser of it and the server's own bound
+   * (`TESS_BATCH_MAX_BYTES`). Unset, the server's bound alone applies.
+   */
+  maxBatchBytes?: number;
 }

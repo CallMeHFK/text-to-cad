@@ -10,13 +10,17 @@
 | cockpit.py | STEP/cockpit.step | `#o1.5` cockpit furniture |
 | sidepod_left.py | STEP/sidepod_left.step | `#o1.6` left sidepod |
 | sidepod_right.py | STEP/sidepod_right.step | `#o1.7` right sidepod (the left one's mirror image, from the same factory) |
-| engine_cover.py | STEP/engine_cover.step | `#o1.8` engine cover |
+| engine_cover.py | STEP/engine_cover.step | `#o1.8` engine cover: the parts around the shell, linking the model below |
+| cover_panel.py | STEP/cover_panel.step | carbon cover shell (linked by `engine_cover.py`; its own model because it is nine tenths of the cover's build time) |
 | airbox.py | STEP/airbox.step | `#o1.9` airbox |
 | floor.py | STEP/floor.step | `#o1.10` floor |
 | diffuser.py | STEP/diffuser.step | `#o1.11` diffuser |
 | cooling.py | STEP/cooling.step | `#o1.12` cooling (radiators, ducts) |
 | power_unit.py | STEP/power_unit.step | `#o1.13` power unit |
-| drivetrain.py | STEP/drivetrain.step | `#o1.14` drivetrain |
+| drivetrain.py | STEP/drivetrain.step | `#o1.14` drivetrain: the running gear, linking the three models below |
+| gearbox_casing.py | STEP/gearbox_casing.step | ribbed gearbox casing (linked by `drivetrain.py`; its own model because it is two thirds of the drivetrain's build time) |
+| drivetrain_ancillaries.py | STEP/drivetrain_ancillaries.step | hardware bolted to the casing (linked by `drivetrain.py`) |
+| rear_structure.py | STEP/rear_structure.step | rear impact structure, pickup carriers, pylon pad, rear light (linked by `drivetrain.py`) |
 | rear_wing.py | STEP/rear_wing.step | `#o1.15` rear wing mainplane + endplates |
 | drs_flap.py | STEP/drs_flap.step | `#o1.16` DRS flap (rotates through `ANIMATION_JS` in `f1.py`) |
 | drs_actuator.py | STEP/drs_actuator.step | `#o1.17` DRS actuator four-bar |

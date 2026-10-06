@@ -2,9 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { TreeRowSurface, TreeRowChevron, TreeRowLabel } from "@text-to-cad/ui/primitives/tree-row";
 import { TreeFilterHighlight, TreeFilterInput } from "@text-to-cad/ui/primitives/tree-filter";
 import { cn } from "@text-to-cad/ui/utils";
-import ToolPanel, { ToolPanelCollapse } from "../kit/tools/ToolPanel.jsx";
-import { TOOL_PANEL_REFERENCE_HEIGHT } from "../kit/tools/toolStackLayout.js";
-import { useViewerMobile } from "../../file-viewer/responsive.js";
+import ToolPanel, { ToolPanelClose } from "../kit/tools/ToolPanel.jsx";
 import RobotComponentDetails, { RobotLinkDetails, RobotLinksSummary } from "./LinkDetails.jsx";
 import { useTreeSearch } from "../kit/inspector/modelTreeSearch.js";
 import { buildRobotTree, robotComponentNodeId, robotLinkFacts, robotLinkNodeId, robotTreeAncestorIds } from "./robotTree.js";
@@ -102,7 +100,6 @@ function RobotSearchRow({ match, highlighted, cursor, selection }) {
  * @param {(path: string) => void} [props.onOpenFile] Opens a file the description names.
  */
 export default function LinksSection({ description = null, components = EMPTY, parts = EMPTY, selection, groupNamesByLink = null, active = true, meshPath = null, onOpenFile = null }) {
-  const mobile = useViewerMobile();
   const tree = useMemo(() => buildRobotTree(description, { components, parts }), [description, components, parts]);
   const [userExpanded, setUserExpanded] = useState(null);
   const defaultExpanded = useMemo(() => initialExpansion(tree), [tree]);
@@ -157,8 +154,9 @@ export default function LinksSection({ description = null, components = EMPTY, p
 
   return <>
     {/* No heading: the filter is the panel's top row, and stays put while the tree scrolls under it. */}
-    <ToolPanel id="tree" label="Links" fit="tree" resizable defaultCollapsed={mobile} hidden={!active}
-      header={<TreeFilterInput dense label="Filter links" placeholder="Filter…" yieldWhileTyping value={query} onChange={changeQuery} onKeyDown={onSearchKeyDown} trailing={<ToolPanelCollapse/>}/>}>
+    {/* Its X closes it, and Select, pressed while it is the tool, opens it again; on a phone it starts closed. */}
+    <ToolPanel id="tree" label="Links" fit="tree" resizable closable collapsible={false} hidden={!active}
+      header={<TreeFilterInput dense label="Filter links" placeholder="Filter…" yieldWhileTyping value={query} onChange={changeQuery} onKeyDown={onSearchKeyDown} trailing={<ToolPanelClose/>}/>}>
       <div className="flex flex-col text-tiny" aria-label="Robot links">
         <div ref={listRef} className="px-1 py-1" aria-label="Robot tree area"
           onClick={event => { if (!event.target.closest("li,button,input")) clearSelection(); }}>
@@ -172,7 +170,8 @@ export default function LinksSection({ description = null, components = EMPTY, p
         </div>
       </div>
     </ToolPanel>
-    {details ? <ToolPanel id="reference" title={referenceTitle} label="Reference details" closeLabel="Clear selection" fit="details" widthFrom="tree" maxHeight={TOOL_PANEL_REFERENCE_HEIGHT} hidden={!active} onClose={clearSelection}>
+    {/* Sized on its own, apart from the tree. */}
+    {details ? <ToolPanel id="reference" title={referenceTitle} label="Reference details" closeLabel="Clear selection" fit="details" resizable hidden={!active} onClose={clearSelection}>
       <div className="px-2 pb-1.5">{details}</div>
     </ToolPanel> : null}
   </>;

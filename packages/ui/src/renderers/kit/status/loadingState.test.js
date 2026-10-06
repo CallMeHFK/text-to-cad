@@ -16,9 +16,9 @@ test("opening counts real geometry work and an update preserves the prior view",
   assert.equal(viewerLoadingState({ error: { severity: "warning", blocking: false }, busy: true }).opening, true);
 });
 
-test("current preview ends update activity even while the output is still being written", () => {
+test("a build of the file is an update of the model on screen until it ends", () => {
   assert.equal(viewerLoadingState({ editPending: true, previousView: true }).updating, true);
-  assert.equal(viewerLoadingState({ editPending: true, previousView: true, currentPreview: true }).busy, false);
+  assert.equal(viewerLoadingState({ editPending: true, previousView: true }).opening, false);
   assert.equal(viewerLoadingState({}).busy, false);
 });
 

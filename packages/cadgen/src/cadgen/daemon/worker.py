@@ -11,6 +11,11 @@ The frames here are deliberately the same shape the daemon sends its client
 relay and the client's wire protocol is untouched. A third frame, ``{"event": ...}``,
 carries build-tree events (STORE.md §Lazy children): a child a model's body submits
 from inside this worker reports through the same channel as the worker's own output.
+A fourth, ``{"heartbeat": {"phase": ..., "cpu": ...}}``, is the worker's liveness
+while a job runs (``_heartbeat``); the supervisor consumes it and never relays it.
+A fifth, ``{"artifactNext": true}``, is an artifact job asking before each derivation
+whether anyone still wants it (``_wanted``); the supervisor answers ``{"goOn": ...}``
+on stdin and never relays it.
 
 One request kind, ``run`` — a CLI tool, output streamed as frames. The store root
 arrives on every request (``store_root``) and is applied per job, so one daemon serves
@@ -31,6 +36,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import traceback
 
 # Same registry the supervisor validates against; imported rather than duplicated.
@@ -76,10 +83,68 @@ def _apply_request_env(request: dict) -> None:
         os.environ.pop("CADGEN_JOB_ID", None)
 
 
+# A job's frames come from its body, from the threads relaying its children's events
+# and from the heartbeat. A line is one frame only if each write is whole.
+_EMIT_LOCK = threading.Lock()
+# While a job runs, a daemon thread emits a heartbeat this often. The supervisor
+# calls a worker hung only well past it (server.WORKER_SILENCE_TIMEOUT_SECONDS).
+HEARTBEAT_INTERVAL_SECONDS = 10.0
+# The phase the running job last announced about itself; its heartbeat carries it.
+_PHASE: list[str | None] = [None]
+
+
 def _emit(frame: dict) -> None:
     """One JSON line on the real stdout. Never the redirected one."""
-    sys.__stdout__.write(json.dumps(frame, separators=(",", ":")) + "\n")
-    sys.__stdout__.flush()
+    line = json.dumps(frame, separators=(",", ":")) + "\n"
+    event = frame.get("event")
+    if isinstance(event, dict) and event.get("phase") and event.get("job") == os.environ.get("CADGEN_JOB_ID"):
+        _PHASE[0] = str(event["phase"])
+    with _EMIT_LOCK:
+        sys.__stdout__.write(line)
+        sys.__stdout__.flush()
+
+
+def _beat() -> None:
+    # process_time is the whole process's CPU, every thread: the same clock the
+    # supervisor reads from outside when a native call starves this thread.
+    _emit({"heartbeat": {"phase": _PHASE[0], "cpu": round(time.process_time(), 3)}})
+
+
+@contextlib.contextmanager
+def _heartbeat():
+    """Emit a liveness frame every ``HEARTBEAT_INTERVAL_SECONDS`` while a job runs.
+
+    Silence then means hung, not busy: a model body can compute for an hour without
+    announcing anything, and the supervisor could not tell that from a wedge. The
+    first beat is written synchronously, so the supervisor holds a CPU baseline from
+    the job's first instant. The thread beats only while the interpreter schedules
+    it: a stopped process, or a native deadlock holding the GIL, goes silent as it
+    must. A native call that holds the GIL while computing (an OCCT boolean does)
+    starves it too, which is why the supervisor reads the worker's CPU clock before
+    it kills a silent worker (``pool.Worker.frames``).
+
+    Joined before the job's exit frame is written, so no heartbeat ever follows
+    ``exit`` or lands in the next job; a daemon thread, so it dies with the process.
+    Not progress: nothing relays it to the client or folds it into the job ledger.
+    """
+    _PHASE[0] = None
+    stop = threading.Event()
+
+    def run() -> None:
+        while not stop.wait(HEARTBEAT_INTERVAL_SECONDS):
+            try:
+                _beat()
+            except (OSError, ValueError):
+                return  # the frame channel is gone; stdin's EOF ends the worker
+
+    _beat()
+    thread = threading.Thread(target=run, name="cadgen-worker-heartbeat", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join()
 
 
 class _FrameWriter(io.TextIOBase):
@@ -155,21 +220,28 @@ def _warm_imports() -> None:
     # preloads the kernel; the daemon and viewer server remain lightweight.
     with contextlib.suppress(Exception):
         importlib.import_module("build123d")
-        # This fresh worker has not accepted or executed authored source yet.
-        # Only bootstrap may establish the memo cache's runtime witness;
-        # generic in-process runners cannot bless a caller's earlier patches.
-        importlib.import_module("cadgen.memoization").install(trusted_worker=True)
     with contextlib.suppress(Exception):
         importlib.import_module("cadgen.generation")
     for tool in _TOOL_IMPORTS:
         with contextlib.suppress(Exception):
             _tool_main(tool)
+    # Every saved STEP's writer input names the cadgen release and the kernel
+    # (store.build.writer_input_digest), and every box key names the kernel. Each
+    # is read from installed metadata once per process, by a lookup that lists
+    # every folder on sys.path: tens of milliseconds a job would otherwise pay
+    # with its model's folder on that path.
+    with contextlib.suppress(Exception):
+        import cadgen
+        from cadgen.store.surfaces import kernel_versions
+
+        getattr(cadgen, "__version__")
+        kernel_versions()
 
 
-def _run(request: dict) -> int:
+def _run(request: dict, *, supervised: bool = False) -> int:
     tool = request.get("tool")
     if tool == "artifact":
-        return _run_artifact(request)
+        return _run_artifact(request, supervised=supervised)
     argv = [str(a) for a in request.get("argv") or []]
     cwd = request.get("cwd")
     prog = str(request.get("prog") or "") or None
@@ -216,8 +288,26 @@ def _run(request: dict) -> int:
         _evict_first_party_modules()
 
 
-def _run_artifact(request: dict) -> int:
-    """A typed operation has no parser, script path, declared outputs or hygiene scan."""
+def _wanted() -> bool:
+    """Whether anyone still wants this artifact job's next derivation, asked of the supervisor.
+
+    The answer is one line on stdin, the channel the job came on: the supervisor sends it
+    before anything else (``server._handle_request``). It says no once the job's caller has
+    left and no identical request has attached meanwhile, as when the CAD Viewer leaves a
+    model, and the job then ends with what it has derived, its worker warm. No answer, a
+    supervisor gone, is no."""
+    _emit({"artifactNext": True})
+    try:
+        return json.loads(sys.stdin.readline())["goOn"] is True
+    except (ValueError, KeyError, TypeError):
+        return False
+
+
+def _run_artifact(request: dict, *, supervised: bool = False) -> int:
+    """A typed operation has no parser, script path, declared outputs or hygiene scan.
+
+    ``supervised``: a daemon worker's job (``serve``), which asks before each derivation
+    whether anyone still wants it. A one-shot transient worker has nobody to ask."""
     from cadgen.daemon import artifacts, broker
 
     out, err = _FrameWriter("stdout"), _FrameWriter("stderr")
@@ -232,7 +322,8 @@ def _run_artifact(request: dict) -> int:
             raise RuntimeError("artifact worker store does not match its request")
         with broker.held(f"artifact:{operation['kind']}", required=True), artifacts.worker_context(root), \
              contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            result = artifacts.result_frame(operation, artifacts.execute(operation))
+            result = artifacts.result_frame(
+                operation, artifacts.execute(operation, keep_going=_wanted if supervised else None))
             _emit({"artifactResult": result})
         return 0
     except BaseException:  # the worker stays reusable, but no success is emitted
@@ -258,6 +349,11 @@ def serve() -> int:
     from cadgen.daemon import executors
 
     executors.set_event_sink(lambda event: _emit({"event": event}))
+    # What killed workers left in the temp folder (views, trace logs) goes, on a
+    # thread of its own: no job waits for it, and no live process's is touched.
+    from cadgen._internal import temp_leftovers
+
+    temp_leftovers.sweep_in_background()
     _warm_imports()
     _emit({"ready": os.getpid()})
     for line in sys.stdin:
@@ -276,7 +372,9 @@ def serve() -> int:
             return 0
         else:
             _apply_request_env(request)
-            _emit({"exit": _run(request), "pid": os.getpid()})
+            with _heartbeat():
+                code = _run(request, supervised=True)
+            _emit({"exit": code, "pid": os.getpid()})
     return 0
 
 

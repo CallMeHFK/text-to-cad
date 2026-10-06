@@ -10,7 +10,7 @@ const MAX_PACKAGES = 8;
 const MAX_BYTES = 256 * 1024 * 1024;
 
 export function completedPackageRevision(entry) {
-  if (!renderCapabilities(entrySourceFormat(entry)).topology || entry?.editingPreview
+  if (!renderCapabilities(entrySourceFormat(entry)).topology
       || entry?.runtimeSurfaceViewReplacement || !entry?.file || !entry?.hash) return "";
   return JSON.stringify([entry.file, entry.kind, entry.hash, entryAssetUrl(entry, "glb"),
     entryMeshAssetSignature(entry), entry.documentHash || "", entry.sourceSidecar?.appearance || null]);
@@ -66,9 +66,9 @@ export function createCompletedPackageCache({ maxEntries = MAX_PACKAGES, maxByte
   let nextScope = 1;
   const scope = client => {
     if (!client || typeof client !== "object") return "";
-    // Stable across mounts of one workspace service, never across resource
+    // Stable across mounts of one CAD service, never across resource
     // generations, authentication scopes or replacement services.
-    if (client.resources) return JSON.stringify([client.workspaceId, cadResourceCacheKey(client.resources, "")]);
+    if (client.resources) return cadResourceCacheKey(client.resources, "");
     if (!anonymousScopes.has(client)) anonymousScopes.set(client, nextScope++);
     return `client:${anonymousScopes.get(client)}`;
   };

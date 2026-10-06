@@ -16,12 +16,22 @@ from pathlib import Path
 
 # Mirror of TESSELLATION_VERSION in packages/core/src/lib/surf/tessellate.js
 # (sync-tested). It is part of the MESH index key, not a store salt.
-MESH_TESSELLATION_VERSION = 5
+MESH_TESSELLATION_VERSION = 9
 
 # "document" is the ARTIFACT side (sha256 of a file's bytes → its tree); every
 # other kind is the code/dependency side. STORE.md §2, the law.
-INDEX_KINDS = ("model", "document", "output", "component", "surface", "op", "mesh", "drawing")
+INDEX_KINDS = ("model", "document", "output", "component", "surface", "bounds", "mesh", "drawing")
 
+# Kinds an older cadgen wrote and this one never reads: the sweeper removes
+# them, with every object only they named (STORE.md §8). A folder under index/
+# in neither list is not this cadgen's to judge -- a newer cadgen's, or no
+# cadgen's at all -- and nothing here touches it.
+RETIRED_KINDS = ("op",)
+
+# The kinds eviction may drop (STORE.md §8): derivations that a build or a
+# reader recomputes on a miss. Records, document entries and output entries
+# are never evicted.
+DERIVED_KINDS = ("component", "surface", "bounds", "mesh", "drawing")
 
 def store_root() -> Path:
     override = os.environ.get("CADGEN_CACHE_DIR", "").strip()

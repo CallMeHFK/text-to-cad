@@ -1,3 +1,4 @@
+import { entryHasMesh } from "@text-to-cad/core/lib/entryAssets.js";
 import { failedStepArtifact, stepArtifactHasRenderableGlb, stepArtifactStatusMessage } from "./stepArtifactStatus.js";
 import { fileKey } from "./entryPaths.js";
 import { failureAlert, isViewerServiceFailure, noGeometryAlert } from "../../kit/status/loadAlerts.js";
@@ -51,42 +52,42 @@ export function buildViewerMeshAlert(entry, hasMeshData, loadError, artifact = n
     return noGeometryAlert(fileRef);
   }
 
+  if (!partial && artifact?.settled === true && artifact.status === "compiled" && !entryHasMesh(entry)) {
+    // The model on screen is the previous version, kept while the rewritten file was built, and the
+    // build ended with the server calling the file compiled over a catalog row that names no
+    // geometry (`artifactEndsLoad`): an update that failed, over a model that survives it.
+    return {
+      ...noGeometryAlert(fileRef),
+      blocking: false,
+      summary: "Update failed",
+      title: "Couldn’t update the model",
+      message: `The latest update of “${fileRef}” produced no visible geometry. You’re still viewing the previous version.`
+    };
+  }
+
   return null;
 }
 
 /**
- * Turn a live-edit failure into the same actionable alert used by file loads.
- * Feed disconnects and recoverable preview expiry stay quiet; neither means the
- * model or its saved file is invalid.
+ * Turn a failed build of the file into the same actionable alert used by file loads. A quiet or
+ * unreachable feed stays quiet, and so does a build the file has since moved past: neither means
+ * the model or its saved file is invalid.
  */
-export function buildViewerEditAlert(editingState, showingCurrentPreview = false, hasGeometry = false) {
+export function buildViewerEditAlert(editingState, hasGeometry = false) {
   const state = String(editingState?.state || "").trim().toLowerCase();
-  const detail = String(editingState?.error || "").trim();
-  if (!editingState || state === "disconnected") {
+  if (!editingState || state !== "failed" || editingState.superseded === true) {
     return null;
   }
 
-  const usableModelVisible = Boolean(showingCurrentPreview || hasGeometry);
-  const hasSavedFallback = Boolean(editingState.saved || editingState.retainedSaved);
-  const missingPreviewBlocksOpen = editingState.previewUnavailable
-    && !usableModelVisible
-    && !hasSavedFallback;
-  const previewOnlyFailure = editingState.previewUnavailable
-    && /preview|cache|no longer available/i.test(detail);
-  if ((editingState.previewUnavailable && !missingPreviewBlocksOpen && previewOnlyFailure)
-      || (state !== "failed" && !missingPreviewBlocksOpen)) {
-    return null;
-  }
-
-  const actualDetail = detail || (missingPreviewBlocksOpen
-    ? "The live model is no longer available."
-    : "The viewer returned no diagnostic for the failed update.");
+  const usableModelVisible = Boolean(hasGeometry);
+  const actualDetail = String(editingState.error || "").trim()
+    || "The viewer returned no diagnostic for the failed update.";
   const details = [
     editingState.file || editingState.output
       ? `File: ${editingState.file || editingState.output}`
       : "",
     editingState.revision ? `Revision: ${editingState.revision}` : "",
-    showingCurrentPreview ? "Operation: writing the STEP file" : "Operation: updating the model",
+    "Operation: updating the model",
     actualDetail
   ].filter(Boolean).join("\n");
   const common = {
@@ -95,17 +96,6 @@ export function buildViewerEditAlert(editingState, showingCurrentPreview = false
     reload: true,
     ...(usableModelVisible ? { blocking: false } : {})
   };
-
-  if (showingCurrentPreview) {
-    return {
-      ...common,
-      summary: "Update failed",
-      title: "Couldn’t write the STEP file",
-      message: "The updated model is visible, but the STEP file could not be written.",
-      reason: actualDetail,
-      recovery: "Check the diagnostic in Details and the viewer’s terminal output, then run the model again."
-    };
-  }
 
   if (isViewerServiceFailure(editingState.failure, actualDetail)) {
     return {

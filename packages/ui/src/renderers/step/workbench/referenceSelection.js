@@ -65,10 +65,9 @@ export function buildNormalizedReferenceState(entry, referencePayload = null, {
   // A component-GLB package has no whole-assembly selector bundle; the caller composes the
   // per-component runtimes and passes the result here instead of a single bundle to parse.
   const selectorRuntime = prebuiltSelectorRuntime || buildSelectorRuntime(referencePayload, {
-    // fileRefPrefix is the shortest path suffix that names this entry uniquely, extension
-    // included -- the extension is what separates format siblings (plate.stl vs plate.3mf),
-    // which is why cadPathForEntry (which strips it) is NOT used here. An entry without the
-    // field emits bare "#..." exactly as before, so the prefix is opt-in per call site.
+    // fileRefPrefix is the file's absolute path (the view's), extension
+    // included -- which is why cadPathForEntry (which strips it) is NOT used here. An entry
+    // without the field emits bare "#...", so the prefix is opt-in per call site.
     copyCadPath: copyCadPath || fileRefPrefixForEntry(entry),
     partId,
     transform,
@@ -315,16 +314,17 @@ export function withFileRefPrefix(line, prefix) {
 }
 
 /**
- * The ONE shape copied reference text takes, whoever asked for it — the Copy Reference
- * button and its shortcut, a viewport or tree menu's Copy Reference, a double-click on a
- * face or edge, Add to prompt: each line canonical, each carrying this file's prefix, so a
- * ref pasted into a prompt spanning several files still says which file it is from.
+ * The ONE shape copied reference text takes, whoever asked for it — the Reference panel's
+ * Copy and its shortcut, a viewport or tree menu's Copy Reference, a double-click on a face or
+ * edge: each line canonical, each carrying this file's prefix, so a ref pasted into a prompt
+ * spanning several files still says which file it is from.
  */
 export function copyTextLines(lines, fileRefPrefix = "") {
   return (Array.isArray(lines) ? lines : String(lines || "").split("\n"))
     .map((line) => withFileRefPrefix(canonicalCadRefCopyText(line), fileRefPrefix))
     .filter(Boolean);
 }
+
 
 /** The file prefix a copied ref should carry, or "" when the entry has none. */
 export function fileRefPrefixForEntry(entry) {

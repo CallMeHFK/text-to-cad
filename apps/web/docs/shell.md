@@ -1,20 +1,24 @@
-# Hosting the shared FileViewer
+# Hosting the shared CAD viewer
 
-The complete file-tab interface lives in `@text-to-cad/ui/file-viewer`. Web and
-desktop both render that component. Navigation controls are lower-level
+The CAD viewer every app shows is `@text-to-cad/ui/cad-viewer`'s `CadViewer`: the
+shared FileViewer showing one file by its absolute path, its five renderers, the home
+(the model library) with no file open, catalog following, the loading and "File does
+not exist" pages and the library's pictures. Navigation controls are lower-level
 `@text-to-cad/ui/navigation` exports used by FileViewer; apps do not assemble a
 second shell from them.
 
-Web supplies a read-only catalog source, the viewer renderer registrations, URL
-navigation, browser persistence and appearance. It fills FileViewer's slots with
-its own brand (`leading`), release links (`navigationActions`) and appearance
-control (`displayActions`); the nav row, toolbar, sidebars and preview are the
+Web supplies its file source (`createCadFileSource` from `@text-to-cad/ui/catalog`,
+over its CAD client), URL navigation (`onShow`, `?file=` and history),
+browser persistence, the document title and appearance. It hands the viewer its
+links (`ViewerHost.links`: its version, its build's GitHub and Discord, and what
+its release check found, `src/host/viewerLinks.js`) and its appearance control
+(`displayActions`); the navbar, the explorer, the toolbar and preview are the
 shared package's. The root workspace builds UI's ESM, declarations, CSS and
 worker assets before building the app; no source alias or JSX loader is needed.
 
 Native file operations are desktop capabilities. Web offers copy-path actions
-and, when the server advertises `reveal-path`, reveal in the file manager; it has
-no filesystem-writing or editing endpoints.
+and reveal in the file manager of the machine the server runs on; it has no
+filesystem-writing or editing endpoints.
 
 See the app README for commands and `@text-to-cad/ui`'s README and type declarations
 for the source, renderer and lifetime contracts.

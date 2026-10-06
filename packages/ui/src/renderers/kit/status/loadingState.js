@@ -26,11 +26,11 @@ export function loadingProgress(progress, { finding = false, preparing = false }
 
 export function viewerLoadingState({
   busy = false, editPending = false, previousView = false,
-  currentPreview = false, error = null, progress = null,
+  error = null, progress = null,
   finding = false, preparing = false,
 } = {}) {
   const failed = error && (typeof error === "string" || error.severity !== "warning" || error.blocking === true);
-  const active = !failed && (busy || (editPending && !currentPreview));
+  const active = !failed && (busy || editPending);
   return {
     opening: active && !previousView,
     updating: active && previousView,

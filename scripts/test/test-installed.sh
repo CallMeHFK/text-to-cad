@@ -70,6 +70,8 @@ mkdir -p "$EMPTY" "$DIST" "$CACHE" "$DAEMON_STATE"
 export CADGEN_CACHE_DIR="$CACHE"
 export CADGEN_DAEMON=0
 export CADGEN_DAEMON_STATE_DIR="$DAEMON_STATE"
+# What the CAD app remembers (its library, release checks) stays in the throwaway directory too.
+export CADGEN_STATE_DIR="$WORK/state"
 unset CADGEN_BROKER CADGEN_BROKER_KEY CADGEN_BROKER_STATS CADGEN_DAEMON_CHILD CADGEN_ROOT_ID
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -142,6 +144,58 @@ while read -r command; do
   "$VENV/bin/cadgen" $command --help >/dev/null 2>&1 || fail "cadgen $command --help"
   echo "   cadgen $command"
 done <"$WORK/commands.txt"
+
+step "Serve the CAD app over MCP, as an agent host starts it"
+"$VENV/bin/python" - "$VENV/bin/cadgen" "$WORK" <<'PY' || exit 1
+import json, os, subprocess, sys, threading
+import cadgen
+
+server = subprocess.Popen([sys.argv[1], "mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+watchdog = threading.Timer(60, server.kill)
+watchdog.daemon = True
+watchdog.start()
+
+
+def send(message):
+    server.stdin.write(json.dumps({"jsonrpc": "2.0", **message}) + "\n")
+    server.stdin.flush()
+
+
+def call(request_id, method, params):
+    send({"id": request_id, "method": method, "params": params})
+    for line in server.stdout:
+        message = json.loads(line)
+        if message.get("id") == request_id:
+            if "error" in message:
+                sys.exit(f"FAIL: {method}: {message['error']}")
+            return message["result"]
+    sys.exit(f"FAIL: cadgen mcp exited during {method}")
+
+
+# As an MCP Apps host: one that advertises the UI extension is served the page.
+ui = {"extensions": {"io.modelcontextprotocol/ui": {"mimeTypes": ["text/html;profile=mcp-app"]}}}
+call(1, "initialize", {"protocolVersion": "2025-06-18", "capabilities": ui, "clientInfo": {"name": "test-installed", "version": "0"}})
+send({"method": "notifications/initialized"})
+tools = {tool["name"]: tool for tool in call(2, "tools/list", {})["tools"]}
+uri = tools["cad_show"]["_meta"]["ui"]["resourceUri"]
+page = call(3, "resources/read", {"uri": uri})["contents"][0]["text"]
+# The page is package data: a wheel without it serves a placeholder that says so.
+if "missing from this install" in page or "<script" not in page:
+    sys.exit(f"FAIL: {uri} is not the packaged CAD app")
+# Showing a model mounts a view whose launch says which cadgen serves it: this install's.
+mesh = os.path.join(sys.argv[2], "shown.stl")
+with open(mesh, "w", encoding="utf-8") as handle:
+    handle.write("solid t\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid t\n")
+shown = call(4, "tools/call", {"name": "cad_show", "arguments": {"path": mesh}})
+launch = (shown.get("structuredContent") or {}).get("launch") or {}
+if shown.get("isError") or launch.get("version") != cadgen.__version__ or launch.get("model") != os.path.abspath(mesh):
+    sys.exit(f"FAIL: cad_show answered {shown}")
+server.stdin.close()
+if server.wait(30) != 0:
+    sys.exit(f"FAIL: cadgen mcp exited {server.returncode} when the host closed its input")
+watchdog.cancel()
+print(f"   {len(tools)} tools; the app is {len(page) // 1024} KiB at {uri}")
+PY
 
 step "Build a real STEP with no repo in sight"
 mkdir -p "$EMPTY/models"

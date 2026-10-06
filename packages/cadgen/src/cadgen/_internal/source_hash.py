@@ -65,12 +65,17 @@ _SEMANTIC_HASH_SETTLE_NS = 2_000_000_000
 
 
 def _semantic_source_bytes(source: bytes) -> str:
-    """Hash the source buffer a loader actually compiled, without rereading it."""
+    """Hash the source buffer a loader actually compiled, without rereading it.
+
+    ``ast1:`` + sha256 of ``ast.dump`` of the module, assembled from its
+    statements' dumps exactly as the reach analysis assembles it
+    (``cadgen.store.reach.semantic_hash``), so the two always agree."""
+    from cadgen.store.reach import semantic_hash
+
     try:
-        dumped = ast.dump(ast.parse(source))
+        return semantic_hash(ast.parse(source))
     except (SyntaxError, ValueError, MemoryError, RecursionError):
         return hashlib.sha256(source).hexdigest()
-    return "ast1:" + hashlib.sha256(dumped.encode("utf-8")).hexdigest()
 
 
 def _semantic_source_hash(path: Path) -> str:
@@ -110,15 +115,9 @@ def _semantic_source_hash(path: Path) -> str:
 
 @dataclass(frozen=True)
 class PythonSourceClosure:
-    """Transitive local-import closure of a generator script.
-
-    ``files`` lists the manifest-relative paths of the script plus every
-    repository-local Python module it imported at run time (recursively).
-    ``closure_hash`` is a stable digest of those paths and their contents.
-
-    The closure is captured from ``sys.modules`` rather than by static analysis
-    because the generators reach sibling/shared modules through computed
-    ``sys.path`` insertions that static import resolution cannot follow.
+    """The closure a build records (``cadgen.store.closure.build_closure``),
+    carried with its scene into the record and the sidecar: ``files`` relative
+    to the script's folder, ``closure_hash`` the digest over their hashes.
     """
 
     closure_hash: str
@@ -130,6 +129,12 @@ class PythonSourceClosure:
     # relative path -> that file's content hash, so a stale verdict can NAME the
     # file that changed instead of only reporting that the digest moved.
     file_hashes: dict[str, str] = field(default_factory=dict)
+    # relative path -> the names reached in a sliced helper (``cadgen.store.closure``);
+    # a file absent here is hashed whole.
+    names: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # relative path -> a sliced helper's whole-file hash, of the bytes its slice
+    # was taken from (the gate's no-re-analysis fast path).
+    wholes: dict[str, str] = field(default_factory=dict)
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -138,32 +143,6 @@ def _is_within(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
-
-
-def _resolve_manifest_path(relative: str) -> Path | None:
-    """Inverse of ``_manifest_path``: resolve a stored relative path back to an
-    existing file under one of the manifest roots."""
-    rel = str(relative or "").strip()
-    if not rel:
-        return None
-    candidate = Path(rel)
-    if candidate.is_absolute():
-        return candidate if candidate.is_file() else None
-    for root in _manifest_roots():
-        resolved = (root / candidate).resolve()
-        if resolved.is_file():
-            return resolved
-    return None
-
-
-def _closure_hash_for_pairs(pairs: list[tuple[str, str]]) -> str:
-    digest = hashlib.sha256()
-    for rel, file_hash in sorted(pairs):
-        digest.update(rel.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(file_hash.encode("ascii"))
-        digest.update(b"\0")
-    return digest.hexdigest()
 
 
 @functools.lru_cache(maxsize=1)
@@ -283,8 +262,8 @@ def is_first_party_source_file(path: Path) -> bool:
 
 # Cache the per-module resolve()+classify keyed by the RAW ``__file__`` string.
 # ``repo_local_loaded_modules`` runs over ALL of ``sys.modules`` (thousands of
-# entries once numpy/OCP/etc. are imported) on every evict AND every closure
-# capture; the ``Path(...).resolve()`` realpath is the dominant cost and its
+# entries once numpy/OCP/etc. are imported) on every eviction; the
+# ``Path(...).resolve()`` realpath is the dominant cost and its
 # result never changes for a given file, so one lookup per distinct file per
 # process replaces a realpath-storm per build (~0.2-0.7 s on a warm build).
 _MISSING = object()
@@ -338,7 +317,7 @@ def evict_first_party_modules() -> tuple[str, ...]:
 
     Run BEFORE loading a generator: with a clean first-party module space, the
     generator's full dependency closure is freshly imported (and therefore freshly
-    EXECUTED, which :func:`record_first_party_execution` observes) on every run —
+    EXECUTED, which the build's execution hashes observe) on every run —
     regardless of what earlier builds in the same process imported, whether a
     previous build failed partway, or what the generator unloads mid-run. Runtime
     and third-party modules (cadgen, build123d, OCP, ...) are never touched: they
@@ -498,25 +477,6 @@ def _execution_audit_hook(event: str, args: tuple) -> None:
         capture.add(path)
 
 
-def note_executed_files(paths) -> None:
-    """Fold files into the active execution capture as if they had executed.
-
-    A cached child result SKIPS executing its files, but they remain freshness
-    inputs of every enclosing closure — without this, a model whose child
-    result hit records a closure missing that child's files, and the model
-    freshness gate goes blind to edits of them."""
-    capture = _ACTIVE_EXECUTION_CAPTURE
-    if capture is None:
-        return
-    for path in paths:
-        try:
-            resolved = Path(path).resolve()
-        except (OSError, ValueError):
-            continue
-        if resolved.is_file() and is_first_party_source_file(resolved):
-            capture.add(resolved)
-
-
 @contextlib.contextmanager
 def record_first_party_execution():
     """Record every first-party ``.py`` file EXECUTED while the context is active.
@@ -548,187 +508,3 @@ def record_first_party_execution():
         _ACTIVE_EXECUTION_CAPTURE = previous
         if previous is not None:
             previous |= recorded
-
-
-_ACTIVE_DISCOVERED_INPUTS: set[Path] | None = None
-
-
-@contextlib.contextmanager
-def record_discovered_inputs():
-    """Record every NON-Python file a model read while the context is active.
-
-    Import reach is observed (the audit hook above); data reach has to be
-    declared, because reading a file is an ordinary function call with nothing
-    to hook. ``cadgen.read_step`` declares its file here, so a model that builds
-    from a vendor STEP records that STEP's bytes in its closure and rebuilds when
-    they change — the hole that used to need ``--force`` to work around.
-
-    "Discovered" rather than declared-up-front on purpose, in the build-system
-    sense: the inputs are whatever THIS run actually read, recorded as it runs
-    and re-hashed by the next run's gate. A model that reads a different file
-    depending on its parameters records what it read.
-    """
-    global _ACTIVE_DISCOVERED_INPUTS
-
-    recorded: set[Path] = set()
-    previous = _ACTIVE_DISCOVERED_INPUTS
-    _ACTIVE_DISCOVERED_INPUTS = recorded
-    try:
-        yield recorded
-    finally:
-        _ACTIVE_DISCOVERED_INPUTS = previous
-        if previous is not None:
-            previous |= recorded
-
-
-def note_discovered_input(path: Path) -> None:
-    """Declare ``path`` a freshness input of the run in progress.
-
-    A no-op outside a capture window: reading a STEP from a REPL, a test, or a
-    tool is not a build, and there is nothing to record it into.
-    """
-    if _ACTIVE_DISCOVERED_INPUTS is None:
-        return
-    _ACTIVE_DISCOVERED_INPUTS.add(Path(path).expanduser().resolve())
-
-
-def _relative_to_base(path: Path, base: Path) -> str:
-    """A closure file's path relative to the model folder ``base`` (the directory that holds the
-    generator source / logical STEP). Uses ``os.path.relpath`` so a sibling or parent file gets a
-    clean ``../`` ref instead of an absolute or repo-root-anchored path — this keeps the closure
-    (and the assembly.json that records it) location-independent: the same model produces the same
-    closure regardless of where the repository lives on disk.
-
-    On Windows, ``relpath`` RAISES for paths on different drives (a model on ``D:`` importing a
-    helper from ``C:``), where no relative path exists at all. Recording the absolute path is
-    the only representation left, and it is honest: a dependency on another volume does not
-    travel with the model folder either. Better than the alternative, which was the ValueError
-    escaping into the build as a failure to generate.
-    :func:`_resolve_against_base` already reads absolute recorded paths back."""
-    try:
-        return Path(os.path.relpath(path.resolve(), base.resolve())).as_posix()
-    except ValueError:
-        return path.resolve().as_posix()
-
-
-def _resolve_against_base(relative: str, base: Path) -> Path | None:
-    """Inverse of :func:`_relative_to_base`: resolve a ``base``-relative (or absolute) recorded
-    closure path back to an existing file."""
-    rel = str(relative or "").strip()
-    if not rel:
-        return None
-    candidate = Path(rel)
-    resolved = (candidate if candidate.is_absolute() else (base / candidate)).resolve()
-    return resolved if resolved.is_file() else None
-
-
-def closure_for_files(
-    script_path: Path, files: object, *, base: Path,
-    executed_hashes: dict[str, str] | None = None,
-) -> PythonSourceClosure:
-    """Build a closure record from the script plus a set of dependency files, recording every path
-    RELATIVE TO ``base`` (the model folder). The digest is computed over (relative path, content
-    hash) pairs, so it — like the stored ``files`` — is independent of the absolute repository
-    location."""
-    base_dir = base.expanduser().resolve()
-    paths: set[Path] = {script_path.expanduser().resolve()}
-    for file in files:
-        paths.add(Path(file).expanduser().resolve())
-    pairs: list[tuple[str, str]] = []
-    for path in paths:
-        try:
-            file_hash = (executed_hashes or {}).get(str(path))
-            if file_hash is None:
-                file_hash = _semantic_source_hash(path)
-        except OSError:
-            continue
-        pairs.append((_relative_to_base(path, base_dir), file_hash))
-    return PythonSourceClosure(
-        closure_hash=_closure_hash_for_pairs(pairs),
-        files=tuple(sorted(rel for rel, _ in pairs)),
-        file_hashes=dict(pairs),
-    )
-
-
-def capture_runtime_closure(
-    before_module_names: object,
-    script_path: Path,
-    *,
-    base: Path,
-    executed_files: object = (),
-    discovered_inputs: object = (),
-    executed_hashes: dict[str, str] | None = None,
-) -> PythonSourceClosure:
-    """Capture a generator's dependency closure after running it.
-
-    Three observation channels are unioned. Two cover the generator's PYTHON
-    import reach: ``executed_files`` — the first-party files recorded by
-    :func:`record_first_party_execution` while the generator ran (complete even
-    when the generator unloads modules mid-run) — and the ``sys.modules`` delta
-    against ``before_module_names`` (a belt-and-braces catch for modules
-    registered without a fresh body execution). The third is
-    ``discovered_inputs``: the data files the run declared through
-    :func:`note_discovered_input`, which is how ``cadgen.read_step`` puts a
-    vendor STEP into the closure. Every recorded path is relative to ``base``
-    (the model folder), and a non-``.py`` input is hashed by its bytes. Captured
-    execution/declaration hashes take precedence over the files' current bytes.
-
-    A file read WITHOUT going through a declaring reader is still not a
-    freshness input — nothing observes it — which is exactly why reading one is
-    spelled ``read_step`` rather than left to ``open()``. A composed child is
-    captured the documented way, by importing its generator; generated children
-    are kept current by ``generation._rebuild_stale_assembly_children``, not by
-    this closure.
-    """
-    import sys
-
-    new_names = set(sys.modules) - set(before_module_names)
-    dependency_files = [
-        *repo_local_loaded_modules(new_names).values(),
-        *executed_files,
-        *discovered_inputs,
-    ]
-    return closure_for_files(
-        script_path, dependency_files, base=base, executed_hashes=executed_hashes,
-    )
-
-
-def _recompute_closure_hash(relative_files: object, *, base: Path, hasher) -> str | None:
-    base_dir = base.expanduser().resolve()
-    pairs: list[tuple[str, str]] = []
-    for relative in relative_files:
-        rel = str(relative or "").strip()
-        if not rel:
-            continue
-        resolved = _resolve_against_base(rel, base_dir)
-        if resolved is None:
-            return None
-        try:
-            pairs.append((rel, hasher(resolved)))
-        except OSError:
-            return None
-    if not pairs:
-        return None
-    return _closure_hash_for_pairs(pairs)
-
-
-def closure_hash_matches(recorded_hash: object, relative_files: object, *, base: Path) -> bool:
-    """Whether a recorded closure hash still matches the current sources.
-
-    ONE digest: the semantic (AST) recompute, which is comment- and
-    whitespace-insensitive. A missing file (the recompute returns ``None``) is not a
-    match — the caller rebuilds.
-
-    The legacy byte-digest fallback is deliberately gone. It existed so descriptors
-    written before comment-insensitive hashing kept validating without a mass rebuild,
-    but it cost a second full-content re-read of every closure file on every miss and it
-    was the last data-compatibility path in the freshness stack. An assembly.json recording a
-    byte digest now reports stale exactly once, rebuilds, and re-records a semantic
-    digest — self-correcting, lazy (only for an entry someone opens), and against a
-    gitignored derived cache.
-    """
-    recorded = str(recorded_hash or "").strip()
-    if not recorded:
-        return False
-    current = _recompute_closure_hash(relative_files, base=base, hasher=_semantic_source_hash)
-    return current is not None and current == recorded

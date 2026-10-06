@@ -31,13 +31,13 @@ Numeric selectors belong to one saved revision.
 
 For construction, select by the feature's geometry or datum where practical:
 normal, axis, plane, position or curve type. Re-evaluate selections after an
-operation that changes the relevant topology.
-
-During a cadgen build, geometric equality and hashing can recognize equivalent
-reconstructed subshapes rather than requiring the same native handle. Coincident
-identical shapes may compare equal; this is not persistent feature identity or
-proof that a selected edge survived an operation unchanged. The installed
-cadgen package's `MEMO.md` describes that behavior.
+operation that changes the relevant topology. Select a fillet's or chamfer's
+edges from the solid it rounds, after that solid's last operation: an
+operation returns new native topology wherever it changed the solid, so an
+edge held from before it may not be the solid's own. A fillet silently skips
+such an edge, and fails when none is left; a chamfer fails on it. Shape
+equality is build123d's own and compares native handles, so
+`edge in solid.edges()` is true only for the solid's own edge.
 
 ## Labels and assemblies
 
@@ -197,10 +197,14 @@ surfaces were requested.
 
 Use `cadgen.geometry.topology_errors`, `boundary_edges` and, when relevant,
 `self_intersections` on saved geometry. During a failing construction, check
-intermediates around the suspect operation. `BRepAlgoAPI_Check` can additionally
-identify Boolean-suitability issues such as tiny edges; there is no need to run
-an expensive diagnostic after every simple operation. Any repair must preserve
-the dimensions being checked. See [inspection](inspection-and-validation.md).
+intermediates around the suspect operation. A validity gate inside a model
+body — a retry ladder that accepts a fillet only when the result is sound, a
+stage check on a casting — uses build123d's `shape.is_valid` and
+`cadgen.geometry.is_sound` (the `BRepAlgoAPI_Check` verdict, which also
+identifies Boolean-suitability issues such as tiny edges). A check costs
+kernel time, so gate where a failure is plausible rather than after every
+simple operation. Any repair must preserve the dimensions being checked. See
+[inspection](inspection-and-validation.md).
 
 A periodic cylinder or revolved face has a seam edge that may appear in CAD
 linework. Use shaded display or another camera to distinguish a display seam

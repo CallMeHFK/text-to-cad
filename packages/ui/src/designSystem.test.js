@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 // or a container query — never the window's `sm:`/`md:` breakpoints. Document content
 // (markdown, code) keeps its own content styles and is not chrome.
 const root = fileURLToPath(new URL(".", import.meta.url));
-const CHROME = ["file-viewer", "host", "primitives", "loading", "drawing", "renderers/kit", "renderers/glb", "renderers/mesh", "renderers/dxf",
+const CHROME = ["file-viewer", "host", "primitives", "loading", "drawing", "library", "cad-viewer", "renderers/kit", "renderers/glb", "renderers/mesh", "renderers/dxf",
   "renderers/workspace"];
 const sources = dir => readdirSync(dir).flatMap(name => {
   const path = join(dir, name);
@@ -30,14 +30,17 @@ test("viewer chrome uses the type scale and the viewer breakpoint, never window 
 });
 
 // Every scroll region of the chrome is the one ScrollArea primitive (`primitives/scroll-area.jsx`):
-// thin overlay bars in the theme's colours, never the platform's scrollbar.
+// thin overlay bars in the theme's colours, never the platform's scrollbar. The home (the model
+// library) is a page, not chrome: it scrolls as a page does, with the platform's own scrollbar.
 const NATIVE_SCROLLER = /\boverflow(?:-[xy])?-(?:auto|scroll)\b/;
-const SCROLL_REGIONS = ["renderers/kit/tools/ToolPanel.jsx", "file-viewer/navigation/FileTree.jsx", "primitives/dropdown-menu.jsx",
-  "file-viewer/navigation/Breadcrumbs.jsx", "renderers/kit/status/ViewerAlertCard.jsx"];
+const PAGES = ["library/ModelLibrary.tsx"];
+const SCROLL_REGIONS = ["renderers/kit/tools/ToolPanel.jsx", "file-viewer/navigation/FolderExplorer.jsx", "primitives/dropdown-menu.jsx",
+  "renderers/kit/status/ViewerAlertCard.jsx"];
 
 test("every scroll region in the viewer's chrome is the ScrollArea primitive, never a native scroller", () => {
   const found = [];
   for (const dir of [...CHROME, "renderers/step", "renderers/robot"]) for (const file of sources(join(root, dir))) {
+    if (PAGES.includes(relative(root, file))) continue;
     readFileSync(file, "utf8").split("\n").forEach((line, index) => {
       if (NATIVE_SCROLLER.test(line)) found.push(`${relative(root, file)}:${index + 1}: ${line.trim().slice(0, 120)}`);
     });

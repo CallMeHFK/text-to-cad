@@ -39,7 +39,7 @@ while [ "$#" -ne 0 ]; do
       fi
       if [ "$1" = "--out" ]; then out_dir="$2"; else only_gate="$2"; fi
       shift 2 ;;
-    # --only: one gate while working on it: format, camera.
+    # --only: one gate while working on it: format, camera, library.
     *) echo "usage: $0 [--out SCREENSHOT_DIR] [--only GATE]" >&2; exit 2 ;;
   esac
 done
@@ -58,6 +58,8 @@ viewer_pidfile="$project/viewer.pid"
 export CADGEN_CACHE_DIR="$project/cache"
 export CADGEN_DAEMON=0
 export CADGEN_DAEMON_STATE_DIR="$project/daemon-state"
+# The model library every Viewer writes: the test's own, never the user's.
+export CADGEN_STATE_DIR="$project/state"
 export CADGEN_VIEWER_DIST="$RUNTIME"
 unset CADGEN_BROKER CADGEN_BROKER_KEY CADGEN_BROKER_STATS CADGEN_DAEMON_CHILD CADGEN_ROOT_ID
 server_pid=""
@@ -155,7 +157,7 @@ if __name__ == "__main__":
 HINGE
 # A SECOND revision of the same model, with an arm long enough that the model
 # no longer fits the frame the first one was fitted to. It is built into a
-# dot-directory, which the catalog scan skips, so the served root still holds
+# dot-directory, which the explorer skips, so the model's folder still holds
 # one hinge; the gate copies it over the first to stand in for a rebuild that a
 # source edit saved while the model was open.
 # The model name decides the output name, so the two revisions build side by
@@ -216,7 +218,7 @@ cat > "$project/smoke.urdf" <<'URDF'
 </robot>
 URDF
 
-"$PYTHON" -c 'import os, pathlib, sys; os.setsid() if os.name != "nt" else None; pathlib.Path(sys.argv[3]).write_text(str(os.getpid()), encoding="ascii"); os.chdir(sys.argv[1]); os.execv(sys.executable, [sys.executable, "-m", "cadgen.viewer", "--host", sys.argv[2], "--json", "--new", "--no-registry"])' \
+"$PYTHON" -c 'import os, pathlib, sys; os.setsid() if os.name != "nt" else None; pathlib.Path(sys.argv[3]).write_text(str(os.getpid()), encoding="ascii"); os.chdir(sys.argv[1]); os.execv(sys.executable, [sys.executable, "-m", "cadgen.viewer", "--host", sys.argv[2], "--json", "--new"])' \
   "$project" "$HOST" "$viewer_pidfile" >"$log" 2>&1 &
 server_pid=$!
 

@@ -1,6 +1,7 @@
 ---
 name: sdf
 description: SDFormat/SDF model and world authoring, validation, and simulator handoff. Use for `.sdf` files, SDFormat XML, models, worlds, links, joints, poses, frames, inertials, visual/collision geometry, mesh URIs, sensors, lights, physics, plugins, includes, Gazebo, static SDF review, or simulator-specific metadata. Do not use for signed-distance-field geometry. Open and visually review existing SDF files in CAD Viewer.
+license: MIT
 ---
 
 # SDF
@@ -17,18 +18,14 @@ The `.sdf` file is the source of truth: author and edit the XML directly. There 
 
 ## Setup
 
-This skill's commands are thin entrypoints over the `cadgen` distribution, which
-carries the Python build runtime and the JavaScript it executes. Install it once:
+Run cadgen through [uv](https://docs.astral.sh/uv/), so this skill's commands share
+one installation, and its warm build daemon, with the CAD app's server:
 
-```bash
-python -m pip install -r requirements.txt
-```
+- `cadgen` below means `uvx --no-config --managed-python --python 3.13 --from cadgen==0.7.15 cadgen`
+- `python` below means `uvx --no-config --managed-python --python 3.13 --from cadgen==0.7.15 python`
 
-Snapshots additionally need a browser, which pip cannot supply:
-
-```bash
-python -m playwright install chromium
-```
+The first run downloads that installation and the first snapshot its headless
+browser; later runs reuse both.
 
 ## Core rules
 
@@ -49,26 +46,26 @@ python -m playwright install chromium
 
 Use this skill for SDFormat outputs. Do not use it for signed-distance-field modeling, raw geometry generation, planning semantics, or to paper over incorrect upstream robot/source data unless the task is explicitly simulator-only.
 
-## CAD Viewer
+## Show the model
 
-After creating or updating SDF files, **always run the command below
-and return live links**, even if a viewer is already running. Snapshots and
-validation do not replace this step. Use it also to open existing files.
+Show the user each file you create or change, and any they ask to see. Snapshots and
+validation don't replace this.
 
-Run from the directory containing the project’s models, usually `models/`.
-The viewer lists files recursively beneath this directory, so choose it rather
-than an individual artifact’s output folder.
+- If your tools include `cad_show` (your host may prefix it), use it with the file's
+  absolute path, and follow its description for when to call it again. `cad_view` reads
+  what the user selected; `cad_screenshot` shows you what they see. Neither is a review
+  of your own work.
+- Otherwise run the CAD Viewer, from any folder:
 
-```bash
-cd /absolute/path/to/model-workspace && cadgen viewer --host 127.0.0.1 --json
-```
+  ```bash
+  cadgen viewer --host 127.0.0.1 --json --detach
+  ```
 
-The launcher starts or reuses the correct instance. Read `url` from its final
-JSON line; never guess the port. Verify each artifact exists under the root,
-then append `?file=<URL-encoded path relative to that root>` to return one link
-per file. For directory review, return the origin alone.
-
-If launching fails, report the failure explicitly.
+  `--detach` returns once the viewer answers requests and leaves it running in the
+  background: always pass it, since a foreground viewer never exits (and piping its
+  output through `tail` can hide the URL for good). It starts this machine's one viewer,
+  or reuses it. Read `url` from its one JSON line (never guess the port), and for each
+  file return `url?file=<its URL-encoded absolute path>`. If it fails to launch, say so.
 
 Review placement, resources and joints. The viewer does not execute simulator
 plugins or validate dynamics; keep simulator checks separate.
@@ -81,12 +78,12 @@ plugins or validate dynamics; keep simulator checks separate.
 4. Author the XML directly, following the worked examples in `references/examples.md`.
 5. Validate the explicit target with `cadgen sdf validate`; treat bundled validation as a guardrail, not simulator proof.
 6. Run target-consumer smoke tests when available (`references/smoke-tests.md`).
-7. Run the [CAD Viewer launch command](#cad-viewer) and return the live link. Static rendering does not execute SDF plugins or read file-authored motion metadata.
+7. Show the result ([Show the model](#show-the-model)). Static rendering does not execute SDF plugins or read file-authored motion metadata.
 8. Report checks run, checks skipped, and assumptions.
 
 ## Commands
 
-Run `cadgen` from the Python environment this skill's `requirements.txt` was installed into (`python -m cadgen.cli <verb>` with that interpreter is the PATH-independent equivalent). `cadgen doctor <skill-dir>` verifies the installed cadgen matches this skill's pin — docs drift silently on a mismatched install. Validation itself needs nothing beyond the Python standard library; only snapshots need the browser. Use `cadgen <verb> --help` for the complete current interface.
+Run `cadgen` as Setup defines it. `cadgen doctor <skill-dir>` reports the installation in use and checks that it is the one this skill pins — docs drift silently on another. Validation itself needs nothing beyond the Python standard library; only snapshots need the browser. Use `cadgen <verb> --help` for the complete current interface.
 
 ```bash
 cadgen sdf validate path/to/model.sdf

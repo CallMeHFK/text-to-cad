@@ -57,10 +57,6 @@ class StoreCase(unittest.TestCase):
                 os.environ["CADGEN_CACHE_DIR"] = self.previous
 
         self.addCleanup(restore)
-        from cadgen.store.closure import forget_model_files
-
-        forget_model_files()
-        self.addCleanup(forget_model_files)
 
     # --- fixtures -------------------------------------------------------------
 
@@ -193,6 +189,89 @@ class GateTruthTable(StoreCase):
         self.assertEqual(self.stale_clause(script), 5)
 
 
+class GateVerifiesOncePerProcess(StoreCase):
+    """Clauses 4 and 5 read each object and output once per process, and every
+    change a stat can see makes the next evaluation read it again (STORE.md §4)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from cadgen.store import trees
+
+        trees._reset_metadata_capture_cache()
+        self.addCleanup(trees._reset_metadata_capture_cache)
+        self.script = self.model("plate")
+        self.out = self.root / "plate.step"
+        self.out.write_bytes(b"ISO-10303-21;\n")
+        self.tree = self.tree_for("plate")
+        self.record(self.script, tree=self.tree, output=self.out)
+        self.settle()
+
+    def settle(self) -> None:
+        """Age the objects and the output four seconds, a whole multiple of every
+        write-clock tick the store knows. A read is remembered only once a later
+        write must stamp differently; these tests are about the fingerprint, not
+        about how long the fixture took on a coarse clock."""
+        from cadgen.store.objects import iter_objects
+
+        for path in [self.out, *(path for _digest, path in iter_objects())]:
+            stat = path.stat()
+            os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns - 4_000_000_000))
+
+    def test_a_second_pass_reads_nothing_that_did_not_change(self) -> None:
+        from cadgen.store import gate, trees
+
+        with mock.patch.object(trees, "read_verified_object", wraps=trees.read_verified_object) as reads, \
+                mock.patch.object(gate, "_hash_file", wraps=gate._hash_file) as hashes:
+            self.assertIsNone(self.stale_clause(self.script))
+            self.assertTrue(reads.called)
+            self.assertEqual(hashes.call_count, 1)
+            reads.reset_mock()
+            hashes.reset_mock()
+            self.assertIsNone(self.stale_clause(self.script))
+            self.assertTrue(trees.tree_complete(self.tree))
+        self.assertFalse(reads.called)
+        self.assertFalse(hashes.called)
+
+    def test_an_object_replaced_truncated_or_deleted_after_verification(self) -> None:
+        from cadgen.store.objects import object_path
+        from cadgen.store.trees import get_tree
+
+        brep = object_path(next(iter(get_tree(self.tree)["components"].values()))["brep"])
+        original = brep.read_bytes()
+
+        def replace() -> None:
+            staged = brep.with_name(f".{brep.name}.staged")
+            staged.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+            os.replace(staged, brep)
+
+        for damage, apply in (("replaced", replace), ("truncated", lambda: os.truncate(brep, 16)),
+                              ("deleted", brep.unlink)):
+            with self.subTest(damage=damage):
+                brep.write_bytes(original)
+                self.settle()
+                self.assertIsNone(self.stale_clause(self.script))
+                apply()
+                self.assertEqual(self.stale_clause(self.script), 4)
+
+    def test_an_output_replaced_rewritten_truncated_or_deleted_after_verification(self) -> None:
+        original = self.out.read_bytes()
+        edited = original.replace(b";", b"!")
+
+        def replace() -> None:
+            staged = self.out.with_name("plate.step.staged")
+            staged.write_bytes(edited)
+            os.replace(staged, self.out)
+
+        for damage, apply in (("replaced", replace), ("rewritten", lambda: self.out.write_bytes(edited)),
+                              ("truncated", lambda: os.truncate(self.out, 4)), ("deleted", self.out.unlink)):
+            with self.subTest(damage=damage):
+                self.out.write_bytes(original)
+                self.settle()
+                self.assertIsNone(self.stale_clause(self.script))
+                apply()
+                self.assertEqual(self.stale_clause(self.script), 5)
+
+
 class ClosureBoundaryRule(StoreCase):
     def test_a_model_taken_through_its_function_is_a_child_anything_else_is_source(self) -> None:
         from cadgen.store.closure import static_closure
@@ -276,14 +355,15 @@ class ClosureBoundaryRule(StoreCase):
                 "entryKind": "part",
                 "sourceKind": "python",
                 "tree": self.tree_for("mirror"),
-                "closure": {"hash": closure.hash, "files": list(closure.files), "static": False},
+                "closure": closure.as_json(),
                 "constants": closure.constants,
                 "children": [],
                 "outputs": {},
             },
         )
         self.assertEqual({"handlebar.py": {"MIRROR_MOUNT_LEFT"}}, {k: set(v) for k, v in closure.constants.items()})
-        self.assertNotIn("handlebar.py", closure.files)
+        # Importing handlebar runs its module body here: it is in by what that runs.
+        self.assertTrue(closure.shas["handlebar.py"].startswith("islice1:"))
 
     def test_a_comment_edit_to_the_constants_module_leaves_the_importer_current(self) -> None:
         mirror = self._mirror_over(self.HANDLEBAR)
@@ -297,11 +377,18 @@ class ClosureBoundaryRule(StoreCase):
     def test_changing_the_constant_value_makes_the_importer_stale(self) -> None:
         from cadgen.store.gate import stale
 
+        # Computed at import: the module-level code computing it is import-time code.
         mirror = self._mirror_over(self.HANDLEBAR)
         self._record_with_constants(mirror)
         handlebar = self.root / "handlebar.py"
         handlebar.write_text(handlebar.read_text(encoding="utf-8").replace("_TOP[0] - 16.0", "_TOP[0] - 21.0"), encoding="utf-8")
         self.assertEqual(2, self.stale_clause(mirror))
+        self.assertIn("handlebar.py", stale(mirror).reason())
+        # A literal is a value the importer took: compared by value.
+        literal = self.HANDLEBAR.replace("(_TOP[0] - 16.0, 40.0, _TOP[2] + 6.0)", "(-120.0, 40.0, 15.0)")
+        mirror = self._mirror_over(literal)
+        self._record_with_constants(mirror)
+        handlebar.write_text(textwrap.dedent(literal.replace("-120.0", "-125.0")), encoding="utf-8")
         self.assertIn("constant changed: MIRROR_MOUNT_LEFT in handlebar.py", stale(mirror).reason())
 
     def test_an_unhashable_constant_is_a_source_edge(self) -> None:
@@ -373,8 +460,17 @@ class ClosureBoundaryRule(StoreCase):
             ),
             encoding="utf-8",
         )
-        sources = {p.name for p in static_closure(finger).source_files}
-        self.assertEqual(sources, {"digits.py", "chain.py", "common.py", "palette.py"})
+        closure = static_closure(finger)
+        sources = {p.name for p in closure.source_files}
+        # The package executes on import (its preamble), digits.py reaches
+        # chain.LENGTH and common.attach by name, and its star import makes
+        # digits.py and palette.py whole.
+        self.assertEqual(sources, {"__init__.py", "digits.py", "chain.py", "common.py", "palette.py"})
+        names = {p.name: v for p, v in closure.names.items()}
+        self.assertEqual(names["chain.py"], ("LENGTH",))
+        self.assertEqual(names["common.py"], ("attach",))
+        self.assertIsNone(names["digits.py"])
+        self.assertIsNone(names["palette.py"])
 
 
 class HashAtExecution(StoreCase):
@@ -528,10 +624,11 @@ class TreeBounds(StoreCase):
     def test_translations_reuse_the_same_tight_box_in_memory_and_on_disk(self) -> None:
         from build123d import Compound, Location
 
-        from cadgen._internal import component_package, op_memo
+        from cadgen._internal import component_package
+        from cadgen.store import bounds
         from cadgen.store.build import build_tree_from_compound
 
-        op_memo.clear()
+        bounds.clear()
 
         def bank(offset: float) -> Compound:
             left = Location((-20, 0, 0)) * self.nurbs_cylinder()
@@ -553,13 +650,13 @@ class TreeBounds(StoreCase):
 
             # Cleared memory: the second build reads the disk tier, so an
             # unchanged assembly measures nothing at all.
-            op_memo.clear()
+            bounds.clear()
             calls.clear()
             _h, warm, _s = build_tree_from_compound(bank(0), root_name="bank")
             self.assertEqual(len(calls), 0, "an unchanged occurrence is not measured again")
             self.assertEqual(warm["bbox"], cold["bbox"])
 
-            op_memo.clear()
+            bounds.clear()
             calls.clear()
             _h, moved, _s = build_tree_from_compound(bank(5), root_name="bank")
             self.assertEqual(len(calls), 0, "translation does not repeat surface extrema")
@@ -567,9 +664,10 @@ class TreeBounds(StoreCase):
 
     def test_rotation_changes_the_measured_box_without_changing_caller_placement(self) -> None:
         from build123d import Location
-        from cadgen._internal import component_package, op_memo
+        from cadgen._internal import component_package
+        from cadgen.store import bounds
 
-        op_memo.clear()
+        bounds.clear()
         part = self.nurbs_cylinder()
         real = component_package.optimal_box
         with mock.patch.object(component_package, "optimal_box", wraps=real) as measure:
@@ -584,7 +682,7 @@ class TreeBounds(StoreCase):
                 self.assertEqual(before, tuple(after.Value(row, column) for row in (1, 2, 3) for column in (1, 2, 3, 4)))
                 self.assert_bounds(actual, {"min": expected[:3], "max": expected[3:]})
             self.assertEqual(measure.call_count, 2)
-            op_memo.clear()
+            bounds.clear()
             again = Location((-123, 321, -20), (90, 0, 0)) * part
             component_package._bbox_from_shape(again)
             self.assertEqual(measure.call_count, 2, "rotation-specific bounds survive RAM eviction")
@@ -921,6 +1019,42 @@ class StoreCli(StoreCase):
         self.assertIn("would remove 1 objects", out)
         self.assertTrue(has_object(orphan))
 
+    def test_gc_and_info_report_the_cap_retired_kinds_and_a_newer_cadgen(self) -> None:
+        import json
+
+        from cadgen.store.drawings import DRAWING_ENTRY_SCHEMA_VERSION
+        from cadgen.store.index import entry_path, write_entry
+        from cadgen.store.objects import has_object, object_path, put_object
+        from cadgen.store.records import RECORD_SCHEMA_VERSION
+
+        cached = put_object(b"a cached drawing payload")
+        write_entry("drawing", "d" * 64, {"schemaVersion": DRAWING_ENTRY_SCHEMA_VERSION, "object": cached})
+        retired = Path(os.environ["CADGEN_CACHE_DIR"]) / "index" / "op"
+        retired.mkdir(parents=True)
+        (retired / ("e" * 64)).write_text('{"value": 1.0}', encoding="utf-8")
+        old = time.time() - 7200
+        for path in (object_path(cached), entry_path("drawing", "d" * 64)):
+            os.utime(path, (old, old))
+
+        code, out = self.run_cli(["gc", "--dry-run", "--max-size", "1"])
+        self.assertEqual(code, 0)
+        self.assertIn("index/op is retired: would remove 1 entries", out)
+        self.assertIn("would evict 1 drawing", out)
+        self.assertTrue(has_object(cached) and (retired / ("e" * 64)).is_file(), "a dry run deletes nothing")
+        code, out = self.run_cli(["info", "--json"])
+        self.assertEqual(code, 0)
+        info = json.loads(out)
+        self.assertEqual((info["cap"], info["retired"], info["deferred"]), (20 * 1024**3, {"op": 1}, None))
+
+        write_entry("model", "a" * 64, {"schemaVersion": RECORD_SCHEMA_VERSION + 1, "tree": "b" * 64})
+        code, out = self.run_cli(["gc", "--max-size", "1"])
+        self.assertEqual(code, 0)
+        self.assertIn("a newer cadgen writes to this store", out)
+        self.assertIn("nothing was removed", out)
+        self.assertTrue(has_object(cached) and (retired / ("e" * 64)).is_file())
+        code, out = self.run_cli(["info", "--json"])
+        self.assertIn(f"index/model entries in format {RECORD_SCHEMA_VERSION + 1}", json.loads(out)["deferred"]["evidence"][0])
+
 
 # The two-level fixture ChildrenByResult runs: a pin and an arm that places it twice.
 # Written by the test so the run reads nothing under models/.
@@ -991,10 +1125,24 @@ class ChildrenByResult(StoreCase):
         self.assertEqual(self.run_model(pin), "built", "a semantic edit rebuilds the child")
         self.assertEqual(self.run_model(arm), "current", "identical geometry: the parent's pin still holds")
 
+        # A publish claims everything its record names -- reused components and
+        # a pinned child's tree alike -- so a sweep already running keeps it all
+        # (STORE.md §8). Everything here is past the grace window beforehand.
+        from cadgen.store.objects import iter_objects, object_path
+        from cadgen.store.records import read_record
+        from cadgen.store.trees import tree_objects
+
+        then = time.time() - 3 * 3600
+        for _digest, path in iter_objects():
+            os.utime(path, (then, then))
+        arm.write_text(arm.read_text(encoding="utf-8").replace("40.0, 8.0", "40.0 * 1.0, 8.0"), encoding="utf-8")
+        self.assertEqual(self.run_model(arm), "built", "the parent alone rebuilds; its child stays current")
+        named = tree_objects(read_record(arm)["tree"]) | tree_objects(read_record(arm)["documentTree"])
+        self.assertIn(read_record(pin)["tree"], named)
+        self.assertEqual([d for d in named if object_path(d).stat().st_mtime < then + 3600], [])
+
         pin.write_text(pin.read_text(encoding="utf-8").replace("radius=2.0", "radius=2.5"), encoding="utf-8")
         self.assertEqual(self.run_model(arm), "built", "a geometry change reaches the parent")
-
-        from cadgen.store.records import read_record
 
         record = read_record(arm)
         self.assertEqual([Path(c["model"]).name for c in record["children"]], ["link_pin.py::link_pin"])

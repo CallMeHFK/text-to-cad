@@ -104,9 +104,16 @@ def _authkey_path(address: str) -> Path:
 
 
 def read_authkey(address: str) -> bytes | None:
-    """The shared secret for this daemon, or None if it has not been created."""
+    """The shared secret for this daemon, or None if it has not been created.
+
+    Read unseen by a build's file trace: a parent submitting a child reads it,
+    on whichever thread connects, and the daemon's key is never a model's input.
+    """
+    from cadgen._internal.filetrace import paused
+
     try:
-        return _authkey_path(address).read_bytes().strip() or None
+        with paused():
+            return _authkey_path(address).read_bytes().strip() or None
     except OSError:
         return None
 
@@ -237,7 +244,7 @@ def _lock_name(address: str) -> str:
 
 
 def daemon_lock(address: str) -> SingletonLock:
-    """The lock a daemon holds for its whole life: one daemon per ADDRESS. Keyed by
+    """The lock a daemon holds while it serves an address: one daemon per ADDRESS. Keyed by
     the socket, not the identity, so a private socket (a test's, a pilot's) is a
     private daemon even when it serves the same cadgen as the user's."""
     return SingletonLock(state_dir() / f"cadgen-daemon-v{PROTOCOL}-{_lock_name(address)}.lock")
@@ -329,9 +336,13 @@ class AuthenticationError(OSError):
 
 
 def connect(address: str, authkey: bytes) -> Channel:
-    """Open a channel to a listening daemon. Raises OSError when there is none."""
+    """Open a channel to a listening daemon. Raises OSError when there is none -- including one
+    that closes the connection while it is being opened, as a daemon on its way out does (its
+    version changed, or it idled out): the caller then spawns or waits for its successor."""
     try:
         return Channel(mpc.Client(address, family=_family(), authkey=authkey))
+    except EOFError as exc:
+        raise OSError("the geometry service closed the connection while it was opening") from exc
     except mpc.AuthenticationError as exc:
         raise AuthenticationError(
             "The geometry service rejected its local connection key. Its running "

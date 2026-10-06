@@ -13,7 +13,7 @@ inputs:
     default: "false"
   npm:
     description: Space-separated root workspace paths, or "none". Include shared dependencies used by the job.
-    default: "packages/core packages/ui apps/web apps/docs"
+    default: "packages/core packages/ui apps/web apps/mcp apps/docs"
 
 runs:
   using: composite
@@ -40,14 +40,29 @@ runs:
         python -m pip install --upgrade pip
         python -m pip install -r requirements-dev.txt
 
+    # zig compiles each target's C runtime once and keeps it in its global cache; the
+    # Windows one is most of a cold tracer build. Keyed on the pinned zig version.
+    - name: Cache zig's compiled C runtimes
+      if: inputs.python == 'true'
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/zig-cache
+        key: zig-${{ runner.os }}-${{ hashFiles('requirements-dev.txt') }}
+
+    - name: Point zig at the cache
+      if: inputs.python == 'true'
+      shell: bash
+      run: echo "ZIG_GLOBAL_CACHE_DIR=${{ runner.temp }}/zig-cache" >> "$GITHUB_ENV"
+
     - name: Install the snapshot browser
       if: inputs.python == 'true' && inputs.playwright == 'true'
       shell: bash
       run: |
+        # The headless shell is all a snapshot launches; the full Chromium would be ~350 MB more.
         if [ "$RUNNER_OS" = "Linux" ]; then
-          python -m playwright install --with-deps chromium
+          python -m playwright install --with-deps --only-shell chromium
         else
-          python -m playwright install chromium
+          python -m playwright install --only-shell chromium
         fi
 
     - name: Install selected root workspaces

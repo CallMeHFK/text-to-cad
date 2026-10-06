@@ -3,7 +3,7 @@ import { attachLiveBinding, HOST_LIVE_COMMANDS } from './liveBinding';
 import type { LiveViewController, LiveViewState } from './liveBinding';
 
 const state = (): Omit<LiveViewState, 'active'> => ({
-  resource: { kind: 'workspace-file', workspaceId: 'root', path: 'scene.glb', revision: 'r1' },
+  resource: { kind: 'workspace-file', path: '/models/scene.glb', revision: 'r1' },
   revision: 'r1', loading: false, selection: [], camera: null, display: { mode: 'solid' }, renderMode: 'inspect',
 });
 function harness(options: Parameters<typeof attachLiveBinding>[2], extra: Record<string, unknown> = {}) {
@@ -41,6 +41,19 @@ describe('the shell live binding', () => {
   it('fails loudly when a declared command is missing from the mounted view', async () => {
     const view = harness({ commands: ['select', 'clearSelection'] }, { select: vi.fn() });
     await expect(view.controller.clearSelection()).rejects.toThrow('declared the live command "clearSelection"');
+  });
+  it('draws a card\'s picture once the view says it has settled, and never for a view that went first', async () => {
+    let settle!: () => void;
+    const thumbnail = vi.fn(async () => new Blob(['card'], { type: 'image/png' }));
+    const view = harness({ declined, ready: () => new Promise<void>(resolve => { settle = resolve; }) }, { thumbnail });
+    const picture = view.controller.thumbnail({ width: 480, height: 360 });
+    await Promise.resolve();
+    expect(thumbnail).not.toHaveBeenCalled();
+    settle();
+    expect(await (await picture).text()).toBe('card');
+    expect(thumbnail).toHaveBeenCalledWith({ width: 480, height: 360 });
+    view.detach();
+    await expect(view.controller.thumbnail({ width: 480, height: 360 })).rejects.toThrow('Show the model tab');
   });
   it('answers a render-mode switch once the viewport shows the mode, not once the store names it', async () => {
     // The store flips at once; the camera takes the mode's projection some frames later.

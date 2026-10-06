@@ -10,8 +10,9 @@ export function validatePromptReference(reference) {
   requireValue(object(reference) && object(reference.resource) && object(reference.target), 'reference requires a resource and target');
   const { resource, target } = reference;
   if (resource.kind === 'workspace-file') {
-    requireValue(typeof resource.workspaceId === 'string' && resource.workspaceId.length > 0, 'workspace identity is required');
-    requireValue(typeof resource.path === 'string' && resource.path.length > 0 && !resource.path.startsWith('/') && !/^[A-Za-z]:/.test(resource.path) && !/[\\\0]/.test(resource.path) && resource.path.split('/').every(part => part && part !== '.' && part !== '..'), 'file paths must be normalized and root-relative');
+    // A file is named by its absolute path, `/`-separated (`/a/b.step`, `C:/a/b.step`).
+    requireValue(typeof resource.path === 'string' && /^(?:[A-Za-z]:)?\//.test(resource.path) && !/[\\\0]/.test(resource.path)
+      && resource.path.replace(/^(?:[A-Za-z]:)?\//, '').split('/').every(part => part && part !== '.' && part !== '..'), 'file paths must be normalized and absolute');
   } else {
     requireValue(resource.kind === 'url' && typeof resource.url === 'string', 'unknown resource kind');
     let url; try { url = new URL(resource.url); } catch { /* Report the contract error below. */ }
@@ -49,6 +50,7 @@ export function validatePromptContext(context) {
       requireValue(typeof part.name === 'string' && part.name.length > 0 && typeof part.mimeType === 'string' && /^[\w.+-]+\/[\w.+-]+$/.test(part.mimeType), 'attachment needs a name and MIME type');
       requireValue(part.content && (typeof part.content.arrayBuffer === 'function' || typeof part.content.then === 'function'), 'attachment must provide binary content');
       requireValue(part.about === undefined || (Array.isArray(part.about) && part.about.every(id => typeof id === 'string')), 'attachment relationships must name reference parts');
+      requireValue(part.label === undefined || typeof part.label === 'string', 'attachment label must be text');
     }
   }
   for (const part of context.parts) if (part.kind === 'attachment') {
@@ -74,11 +76,26 @@ export function createPromptContext(parts, operationId = `${operationNamespace}:
 export function referencePart(reference, id = 'reference') { return { id, kind: 'reference', reference: validatePromptReference(reference) }; }
 export function textPart(text, id = 'text') { return { id, kind: 'text', text }; }
 
+/**
+ * What a reference names inside its file, as a person reads it, one id a line: each CAD selector,
+ * a text range's span (its label, if it has one), or a whole file's label.
+ */
+export function promptReferenceIds(reference) {
+  const { target } = reference;
+  if (target.kind === 'cad-selector') return target.selectors.map(String);
+  if (target.kind === 'text-range') {
+    const { start, end } = target;
+    return [reference.label || `${start.line + 1}:${start.character + 1}–${end.line + 1}:${end.character + 1}`];
+  }
+  return reference.label ? [reference.label] : [];
+}
+
 /** Keep machine identity structured; these strings are the portable human/prompt representation. */
-export function formatPromptReference(reference, { resolvePath } = {}) {
+export function formatPromptReference(reference) {
   validatePromptReference(reference);
-  const path = resolvePath ? resolvePath(reference.resource) : reference.resource.kind === 'url' ? reference.resource.url : reference.resource.path;
-  requireValue(typeof path === 'string' && path.length > 0, 'reference could not be mapped to a destination');
+  // A file by its absolute path, a URL as it is.
+  const path = reference.resource.kind === 'url' ? reference.resource.url : reference.resource.path;
+  requireValue(path.length > 0, 'a reference names its file or URL');
   if (reference.target.kind === 'cad-selector') return buildCadRefToken({ cadPath: path, selectors: [...reference.target.selectors] });
   const quoted = /[\s#"\\]/.test(path) ? JSON.stringify(path) : path;
   if (reference.target.kind === 'text-range') {
@@ -87,9 +104,30 @@ export function formatPromptReference(reference, { resolvePath } = {}) {
   }
   return quoted;
 }
-export function formatPromptContextText(context, options = {}) {
+export function formatPromptContextText(context) {
   validatePromptContext(context);
-  return context.parts.flatMap(part => part.kind === 'text' ? [part.text] : part.kind === 'reference' ? [formatPromptReference(part.reference, options)] : []).join('\n');
+  return context.parts.flatMap(part => part.kind === 'text' ? [part.text] : part.kind === 'reference' ? [formatPromptReference(part.reference)] : []).join('\n');
+}
+
+/**
+ * A context as one message, the way a person would write it: what they said, then what it is
+ * about — each whole file on a `File:` line, the selections in it under `References:`, one per
+ * line — then each attachment that travels as a file, by its label and path (`attachmentPath`;
+ * one sent beside the text is left out). One spelling, whether the message is sent, queued or copied.
+ */
+export function formatPromptMessage(context, { attachmentPath } = {}) {
+  validatePromptContext(context);
+  const said = context.parts.filter(part => part.kind === 'text').map(part => part.text.trim()).filter(Boolean);
+  const files = [], references = [], attachments = [];
+  for (const part of context.parts) {
+    if (part.kind === 'reference') (part.reference.target.kind === 'whole-resource' ? files : references).push(formatPromptReference(part.reference));
+    else if (part.kind === 'attachment') {
+      const path = attachmentPath?.(part);
+      if (path) attachments.push(`${part.label || 'Attachment'}: ${path}`);
+    }
+  }
+  const about = [...files.map(file => `File: ${file}`), ...(references.length ? ['References:', ...references] : []), ...attachments];
+  return [said.join('\n\n'), about.join('\n')].filter(Boolean).join('\n\n');
 }
 
 const failureMessage = error => error instanceof Error ? error.message : String(error);

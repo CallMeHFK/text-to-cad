@@ -159,12 +159,6 @@ export function kinematicsModuleDefinitionFromSidecar(
   return moduleDefinitionFromKinematics(sidecar.kinematics, { cadPath, url });
 }
 
-/** Compile already-resolved preview kinematics without fetching a saved
- * sidecar. Preview data is bound to its in-memory STEP by the build response. */
-export function previewKinematicsModuleDefinition(block, { cadPath = "" } = {}) {
-  return moduleDefinitionFromKinematics(block, { cadPath });
-}
-
 /** Fetch the model's sidecar (<name>.step.json) and compile its
  * kinematics section into a normalized step-module definition. Models with no
  * kinematics resolve to null (nothing to pose). */

@@ -28,6 +28,10 @@ from cadgen.daemon import transport
 CADGEN_DIR = Path(__file__).resolve().parents[1]
 
 SPAWN_WAIT_SECONDS = 30.0  # first daemon start pays the full OCP import
+# A daemon still finishing the jobs it was running when its code changed keeps its address
+# and answers every new request "restart" until they end. A strict request has no cold
+# path, so it asks again this often until the successor takes it.
+RESTART_POLL_SECONDS = 0.5
 
 # The daemon handles requests STRICTLY SEQUENTIALLY. A client that connects while
 # the daemon is still finishing someone else's build — including an orphaned one
@@ -61,14 +65,18 @@ _TIMED_OUT = object()
 # client's cwd, because the worker runs elsewhere.
 # CADGEN_FFMPEG is the same kind of per-client choice: `snapshot --video` encodes
 # with the ffmpeg the CALLER has, and a warm worker's ambient PATH is whatever
-# shell happened to start the daemon.
+# shell happened to start the daemon. CADGEN_STORE_MAX is the cap the daemon's
+# idle housekeeping holds the client's store to (STORE.md §8). CADGEN_VERIFY_READBACK
+# is one build's request (STORE.md §10): a daemon started with it verified every
+# later build, and one started without it skipped the check a maintainer asked for.
 FORWARDED_ENV_VARS = (
     "CADGEN_CACHE_DIR",
     "XDG_CACHE_HOME",
     "LOCALAPPDATA",
     "PYTHONPATH",
     "CADGEN_FFMPEG",
-    "CADGEN_MEMO_CACHE",
+    "CADGEN_STORE_MAX",
+    "CADGEN_VERIFY_READBACK",
 )
 
 # The client's own ffmpeg, looked up once per process. Resolved HERE rather than
@@ -309,7 +317,8 @@ def run_artifact(payload: dict, *, subscriber=None):
 def _run_with_retry(payload: dict, *, on_stream=None, on_event=None,
                     on_artifact_result=None, strict: bool = False, on_connection=None, cancelled=None) -> int | None:
     address = daemon_address()
-    for attempt in range(2):
+    restarted, deadline = False, None
+    while True:
         if cancelled is not None and cancelled():
             return None
         try:
@@ -336,12 +345,23 @@ def _run_with_retry(payload: dict, *, on_stream=None, on_event=None,
                 pass
             if on_connection is not None:
                 on_connection(None)
-        if outcome is _RESTART and attempt == 0:
-            continue  # stale daemon exited; respawn once and retry
-        if outcome is _RESTART and strict and on_stream is not None:
-            on_stream("The geometry service is updating while existing builds finish. Retry after those builds finish.")
-        return outcome if isinstance(outcome, int) else None
-    return None
+        if outcome is not _RESTART:
+            return outcome if isinstance(outcome, int) else None
+        if not restarted:
+            restarted = True
+            continue  # the stale daemon is going; an idle one already released its address
+        # Told to restart again: the stale daemon is finishing jobs and keeps its address
+        # until they end. An ordinary request runs cold meanwhile; a strict one waits for
+        # the successor as long as it would wait on a silent daemon.
+        if not strict:
+            return None
+        if deadline is None:
+            deadline = time.monotonic() + request_timeout()
+        if time.monotonic() >= deadline:
+            if on_stream is not None:
+                on_stream("The geometry service is updating while existing builds finish. Retry after those builds finish.")
+            return None
+        time.sleep(RESTART_POLL_SECONDS)
 
 
 def _connect(address: str) -> transport.Channel:
@@ -464,7 +484,8 @@ def _spawn_daemon(address: str) -> subprocess.Popen | None:
         log_file_path.parent.mkdir(parents=True, exist_ok=True)
         with open(log_file_path, "ab") as log_file:
             return subprocess.Popen(
-                [sys.executable, "-m", "cadgen.daemon"],
+                # -P: cadgen's own modules, never the working folder's (STORE.md §9).
+                [sys.executable, "-P", "-m", "cadgen.daemon"],
                 stdin=subprocess.DEVNULL,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
@@ -739,6 +760,31 @@ def watch_jobs(after: str | None = None, *, output: str | None = None, store_roo
             channel.close()
 
 
+def prewarm() -> bool:
+    """Start this installation's daemon, and with it its warm workers, if none answers.
+
+    The first build of a session otherwise pays for both: spawning the daemon and
+    importing build123d in a worker, seconds before any model code runs. Submits
+    nothing. A daemon that answers is only asked its status, which also replaces one
+    left running by older cadgen code. True once a current daemon answers.
+    """
+    if os.environ.get("CADGEN_DAEMON") == "0" or os.environ.get("CADGEN_DAEMON_CHILD"):
+        return False
+    if not daemon_supported():
+        return False
+    for _attempt in range(2):  # a stale daemon answers "restart" and gives up its address
+        try:
+            channel = _connect_or_spawn(daemon_address())
+        except OSError:
+            return False
+        if channel is None:
+            return False
+        answer = _ask_status(channel)
+        if answer is not _RESTART:
+            return answer is not None
+    return False
+
+
 def status() -> dict | None:
     """The running daemon's state, or None if there is none.
 
@@ -751,6 +797,14 @@ def status() -> dict | None:
         channel = _connect(daemon_address())
     except OSError:
         return None
+    answer = _ask_status(channel)
+    # A stale daemon is on its way out: nothing is warm.
+    return None if answer is _RESTART else answer
+
+
+def _ask_status(channel) -> object:
+    """Ask a connected daemon its state, then close the channel: its status, ``_RESTART``
+    from a daemon left by older code, or None when it does not answer."""
     try:
         if not _send_json(channel, {"kind": "status", "token": compute_version_token()}):
             return None
@@ -759,7 +813,7 @@ def status() -> dict | None:
             if message is _TIMED_OUT or message is None:
                 return None
             if message.get("restart"):
-                return None  # a stale daemon is on its way out; report nothing warm
+                return _RESTART
             if "status" in message:
                 return message["status"]
     finally:

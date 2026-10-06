@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Camera } from "lucide-react";
 import { cn } from "@text-to-cad/ui/utils";
 import { usePromptDestination, useViewerHost } from "../../host/context.js";
-import ViewerAlertCard from "../kit/status/ViewerAlertCard.jsx";
+import ViewerAlertCard, { useAlertDismissal } from "../kit/status/ViewerAlertCard.jsx";
 import ViewerLoadingOverlay from "../kit/status/ViewerLoadingOverlay.js";
+import { ViewUpdateStatus } from "../kit/status/ViewUpdateStatus.jsx";
+import { VIEWPORT_INSET_PX, VIEWPORT_TOP_BAR_PX } from "../kit/shell/viewportLayout.js";
+import { ViewportTopRight } from "../kit/shell/ViewportTopRight.jsx";
 import { attachLiveBinding } from "../kit/shell/liveBinding.js";
+import { useWhenSettled } from "../kit/shell/useWhenSettled.js";
 import { createViewPromptContext, promptDeliveryError } from "../kit/shell/promptContext.js";
 import { useWorkspaceDocument } from "../workspace/useWorkspaceDocument.js";
 import { drawingLoadAlert, useDrawingPayload } from "./useDrawingPayload.js";
@@ -13,7 +16,8 @@ import { readFileView, writeFileView } from "../kit/shell/fileView.js";
 import { drawingTransformCamera, readDrawingTransform } from "./drawingTransform.js";
 
 /**
- * A `.dxf` is a straight render: the drawing, on a canvas, and nothing else.
+ * A `.dxf` is a straight render: the drawing, on a canvas, and nothing else but Quick Edit,
+ * the note to the agent about the file that every view offers.
  *
  * No 3D, no fold preview, no thickness or material, no tools, no toolbar and no
  * panel — not a file panel, not Display settings, not a layer list. A DXF is a
@@ -35,6 +39,7 @@ const NO_CAMERA = "A DXF is a flat drawing shown head on: it has no camera to po
 const NO_DISPLAY = "A DXF has no Display settings: a drawing is painted in the pens it declares, on the "
   + "theme's background, with no surfaces, lighting or render mode to configure.";
 const SAVE_DELAY_MS = 180;
+const DRAWING_UPDATE_STATUS = Object.freeze({ pending: true, label: "Updating drawing…" });
 
 function DxfSurface({ view, data }) {
   const host = useViewerHost();
@@ -43,7 +48,7 @@ function DxfSurface({ view, data }) {
   const file = workspace.entry?.file || view.file.path;
   const payload = useDrawingPayload({ client: workspace.client, file, revision: workspace.resource.revision });
   const [actionError, setActionError] = useState(null);
-  const { onReady, onNavigationActionsChange, onStateChange } = view;
+  const { onReady, onStateChange } = view;
 
   // ---- the view this file was left at ---------------------------------------
   // The file's view (`kit/shell/fileView.js`) with the drawing's transform as its camera and
@@ -69,13 +74,15 @@ function DxfSurface({ view, data }) {
     drawing: payload.drawing, restored, colorScheme: view.appearance?.colorScheme === "dark" ? "dark" : "light",
     onViewMoved: rememberView
   });
-  const { canvasRef, capture, containerRef, dragging, fit } = drawingView;
+  const { canvasRef, capture, containerRef, dragging, fit, thumbnail } = drawingView;
 
   // ---- host chrome -----------------------------------------------------------
   useEffect(() => { onReady?.(true); }, [onReady]);
 
+  // With a drawing on screen, a failure to read the file again leaves that drawing to use.
+  const shown = Boolean(payload.drawing);
   const alert = useMemo(() => {
-    if (workspace.catalogError) {
+    if (workspace.catalogError && !shown) {
       return {
         severity: "error", kind: "status", title: "Couldn’t open the drawing",
         message: "The viewer couldn’t retrieve this file’s information.",
@@ -83,10 +90,12 @@ function DxfSurface({ view, data }) {
         details: String(workspace.catalogError), reload: true
       };
     }
-    return drawingLoadAlert(workspace.modelKey || file, payload.error);
-  }, [workspace.catalogError, workspace.modelKey, file, payload.error]);
-  const empty = Boolean(payload.drawing) && !payload.drawing.bounds;
-  const ready = Boolean(payload.drawing) && !payload.loading && !alert;
+    const failed = drawingLoadAlert(workspace.modelKey || file, payload.error);
+    return failed && shown ? { ...failed, blocking: false, message: `${failed.message} The existing drawing remains visible.` } : failed;
+  }, [workspace.catalogError, workspace.modelKey, file, payload.error, shown]);
+  const empty = shown && !payload.drawing.bounds;
+  // Settled is this revision's drawing painted: a capture waits out an update.
+  const ready = shown && !payload.loading && !payload.updating && !alert;
 
   // ---- snapshot to the prompt ------------------------------------------------
   const resourceRef = useRef(workspace.resource);
@@ -126,44 +135,35 @@ function DxfSurface({ view, data }) {
     workspace.acknowledgeCommand?.("selectReference", selectKey);
   }, [selectKey, workspace.acknowledgeCommand]);
 
-  // ---- the navbar ------------------------------------------------------------
-  // One action, and it is not the camera's. Zooming a drawing is the pointer's job —
-  // wheel or pinch about the pointer, drag to pan, double-click to fit — so there are
-  // no zoom buttons to press, here or anywhere else in the viewer.
-  const actionsRef = useRef({ snapshot });
-  actionsRef.current = { snapshot };
-  useEffect(() => {
-    const actions = [
-      { id: "snapshot", label: "Take snapshot", hint: "Snapshot", icon: Camera, disabled: !ready || !promptAvailable,
-        onInvoke: () => actionsRef.current.snapshot() }
-    ];
-    onNavigationActionsChange?.(actions);
-    return () => onNavigationActionsChange?.([]);
-  }, [onNavigationActionsChange, ready, promptAvailable]);
-
   // ---- the live command surface ----------------------------------------------
   const runtimeRef = useRef(null);
   runtimeRef.current = {
     readState: () => ({
       resource: { ...workspace.resource }, revision: String(workspace.resource.revision || ""),
-      loading: payload.loading, selection: [], camera: null, display: {}, renderMode: "inspect"
+      loading: payload.loading || payload.updating, selection: [], camera: null, display: {}, renderMode: "inspect"
     }),
     setCamera() { throw new Error(NO_CAMERA); },
     resetCamera() { fit(); },
     setDisplaySettings() { throw new Error(NO_DISPLAY); },
     setRenderMode() { throw new Error(NO_DISPLAY); },
-    capture
+    capture,
+    thumbnail
   };
+  // A drawing has settled once it is read and painted: a library card's picture waits for that.
+  const whenSettled = useWhenSettled(() => ready);
+  // The card the viewport shows, and its dismissal: put away, its icon in the navbar brings it back.
+  const cardAlert = alert || (actionError ? { severity: "error", kind: "status", blocking: false, title: "Couldn’t capture the drawing", message: actionError } : null);
+  const alertDismissal = useAlertDismissal(cardAlert, { hasContent: shown, scope: file, onNavigationActionsChange: view.onNavigationActionsChange });
   const binding = data.services.live;
   useEffect(() => {
     if (!binding) return undefined;
-    return attachLiveBinding(binding, () => runtimeRef.current, { declined: DECLINED_LIVE_COMMANDS });
-  }, [binding]);
+    return attachLiveBinding(binding, () => runtimeRef.current, { declined: DECLINED_LIVE_COMMANDS, ready: whenSettled });
+  }, [binding, whenSettled]);
 
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground"
       data-slot="cad-file-view" data-drawing-surface>
-      <div ref={containerRef} className="relative min-h-0 flex-1" aria-busy={payload.loading ? "true" : "false"}>
+      <div ref={containerRef} className="relative min-h-0 flex-1" aria-busy={payload.loading || payload.updating ? "true" : "false"}>
         <canvas ref={canvasRef} aria-label={`Drawing: ${view.file.name}`} role="img"
           className={cn("absolute inset-0 block touch-none select-none", dragging ? "cursor-grabbing" : "cursor-grab")} />
         {empty ? (
@@ -172,9 +172,16 @@ function DxfSurface({ view, data }) {
             This drawing has no geometry in its modelspace, so there is nothing to show.
           </p>
         ) : null}
+        {payload.updating && !alert ? <div className="pointer-events-none absolute left-1/2 z-30 flex max-w-[calc(100%-1rem)] -translate-x-1/2 items-center"
+          style={{ top: VIEWPORT_INSET_PX, height: VIEWPORT_TOP_BAR_PX }} data-viewport-status="">
+          <ViewUpdateStatus status={DRAWING_UPDATE_STATUS} className="rounded-md bg-background/95 px-1 py-0.5 shadow-sm" />
+        </div> : null}
+        {/* The host's notice, top-right, once the drawing is on screen: a rebuild, or a failed update the
+            drawing survives, keeps it there, as the 3D views do. */}
+        <ViewportTopRight notice={shown && !payload.loading ? view.notice : null} />
         <ViewerLoadingOverlay loading={{ opening: payload.loading && !alert, progress: { label: "Reading drawing" } }}
           operationKey={file} />
-        <ViewerAlertCard alert={alert || (actionError ? { severity: "error", kind: "status", blocking: false, title: "Couldn’t capture the drawing", message: actionError } : null)} hasContent={Boolean(payload.drawing)} onReload={view.reload} />
+        <ViewerAlertCard alert={cardAlert} hasContent={shown} dismissed={alertDismissal.dismissed} onDismiss={alertDismissal.dismiss} onReload={view.reload} file={file} />
       </div>
     </div>
   );

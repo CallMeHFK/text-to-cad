@@ -175,6 +175,20 @@ def _world_leaves(wrapped: Any) -> list[Any]:
     return leaves
 
 
+def component_leaf_layout(wrapped: Any) -> dict[str, Any]:
+    """How a prototype's leaves sit: ``{"leaves": n, "placed": bool}``.
+
+    ``placed`` is True when every leaf of the UNLOCATED prototype carries the
+    identity location, so placing the prototype places each leaf at exactly the
+    prototype's own placement and the leaf's measured box key is the
+    prototype's rotation. A pure function of the encoded bytes.
+    """
+    from OCP.TopLoc import TopLoc_Location
+
+    leaves = _world_leaves(wrapped.Located(TopLoc_Location()))
+    return {"leaves": len(leaves), "placed": all(leaf.Location().IsIdentity() for leaf in leaves)}
+
+
 def _bbox_from_shape(shape: Any) -> dict[str, list[float]] | None:
     """The world-frame axis-aligned bounding box of a composed shape, as the
     ``{"min": [...], "max": [...]}`` the assembly.json records so a cheap whole-entry
@@ -183,40 +197,66 @@ def _bbox_from_shape(shape: Any) -> dict[str, list[float]] | None:
     Measured PER LEAF and merged, not once over the whole compound, because a
     leaf's box is a pure function of its geometry and rotation. Translation
     shifts the six bounds without repeating the surface-extrema calculation.
-    ``op_memo.memoized_value`` keeps the untranslated box in the warm worker
-    and on disk, so translated instances share that calculation. Tight bounds
+    ``cadgen.store.bounds`` keeps the untranslated box in the warm worker and
+    in the store, so translated instances share that calculation. Tight bounds
     cost ~0.08 ms per face, which a whole
     150k-face assembly could not absorb on every finalize but an unchanged
     occurrence never pays twice.
+
+    The key's content digest serializes the leaf's geometry. Occurrences
+    of one prototype share its TShape, and nothing runs between two leaves of
+    this read-only traversal that could edit it, so the digest is computed once
+    per TShape encountered here and never kept past the call: a 2400-occurrence
+    assembly of 470 prototypes serializes 470 shapes, not 2400.
     """
     try:
-        from cadgen._internal import op_memo
-        from OCP.TopLoc import TopLoc_Location
-        from OCP.gp import gp_Vec
-
-        boxes = []
-        for leaf in _world_leaves(shape.wrapped):
-            transform = leaf.Location().Transformation()
-            translation = tuple(transform.TranslationPart().Coord())
-            transform.SetTranslationPart(gp_Vec(0.0, 0.0, 0.0))
-            untranslated = leaf.Located(TopLoc_Location(transform))
-            box = op_memo.memoized_value(
-                # The op_name names the FUNCTION: change what this computes and
-                # change the name (or _OP_MEMO_VERSION) with it.
-                "occurrence_bbox.optimal.untranslated.v1",
-                op_memo.placed_shape_key(untranslated),
-                lambda untranslated=untranslated: optimal_box(untranslated),
-            )
-            if box is not None:
-                boxes.append([value + translation[index % 3] for index, value in enumerate(box)])
-        if not boxes:
-            return None
-        return {
-            "min": [min(box[axis] for box in boxes) for axis in (0, 1, 2)],
-            "max": [max(box[axis] for box in boxes) for axis in (3, 4, 5)],
-        }
+        return _leaf_bounds(shape)
     except Exception:  # noqa: BLE001 - OCP bounds reads can raise on odd shapes; a component without bounds is None
         return None
+
+
+def _leaf_bounds(shape: Any) -> dict[str, list[float]] | None:
+    """:func:`_bbox_from_shape`, raising where it answers None for a failure:
+    None here means only that no leaf has bounds. Leaves are merged in the
+    order :func:`_world_leaves` yields them, the first of equal values kept."""
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.gp import gp_Vec
+
+    from cadgen.store.bounds import cached_box
+
+    boxes = []
+    digests: dict[Any, str] = {}
+    for leaf in _world_leaves(shape.wrapped):
+        transform = leaf.Location().Transformation()
+        translation = tuple(transform.TranslationPart().Coord())
+        transform.SetTranslationPart(gp_Vec(0.0, 0.0, 0.0))
+        untranslated = leaf.Located(TopLoc_Location(transform))
+        try:
+            tshape = leaf.TShape()
+            digest = digests.get(tshape)
+        except TypeError:  # an unhashable native handle: digest this leaf alone
+            tshape, digest = None, None
+        if digest is None:
+            digest = hashlib.sha256(_shape_brep_bytes(untranslated)).hexdigest()
+            if tshape is not None:
+                digests[tshape] = digest
+        rotation = struct.pack("<12d", *(transform.Value(row, column)
+                                         for row in range(1, 4) for column in range(1, 5)))
+        box = cached_box(
+            # The name names the FUNCTION: change what this computes and
+            # change the name with it.
+            "occurrence_bbox.optimal.untranslated.v2",
+            (digest, rotation),
+            lambda untranslated=untranslated: optimal_box(untranslated),
+        )
+        if box is not None:
+            boxes.append([value + translation[index % 3] for index, value in enumerate(box)])
+    if not boxes:
+        return None
+    return {
+        "min": [min(box[axis] for box in boxes) for axis in (0, 1, 2)],
+        "max": [max(box[axis] for box in boxes) for axis in (3, 4, 5)],
+    }
 
 
 def _occurrence_color(child: Any) -> list[float] | None:
@@ -626,6 +666,9 @@ def _point_signature(shape: Any) -> tuple:
     ordinary decoder normalization remains the existing v4 behavior. Native
     table indices preserve the point-to-geometry association. No pointer or
     native object escapes this call, and no approximate comparison is used.
+    Placements compare as numbers, so a negative zero equals zero: a decoder
+    recomposes a location chain whose product can carry the other sign (the
+    w16 sump pan's rotated bosses), and that is the same placement.
     """
     from OCP.BinTools import BinTools_ShapeSet
     from OCP.TopAbs import TopAbs_VERTEX
@@ -650,7 +693,8 @@ def _point_signature(shape: Any) -> tuple:
 
     def placement(location):
         transform = location.Transformation()
-        return struct.pack(">12d", *(transform.Value(i, j) for i in range(1, 4) for j in range(1, 5)))
+        # `+ 0.0` folds -0.0 into 0.0 and leaves every other value unchanged.
+        return struct.pack(">12d", *(transform.Value(i, j) + 0.0 for i in range(1, 4) for j in range(1, 5)))
 
     result = []
     for ordinal, vertex in point_vertices:
@@ -780,6 +824,44 @@ def prepare_geometry_component(shape: Any, *, face_colors: object = None) -> dic
     if private is not None:
         private.cad_face_ordinal_colors = dict(colors)
     return {"entry": entry, "payload": payload, "shape": private, "surface": surface}
+
+
+def prepare_published_component(shape: Any, *, face_colors: object = None) -> dict[str, Any]:
+    """:func:`prepare_geometry_component` for a parsed prototype whose exact bytes
+    may already be published.
+
+    A STEP read-back parses every prototype again, and each one was encoded,
+    privately decoded and fenced for point fidelity on every save even when
+    the exact bytes were published by the previous save. When the prototype's
+    bintools-v4 bytes already exist as an object under a component entry that
+    declares them native with this recipe, the codec fence was proven for
+    exactly those bytes by the build that published them, so the decode that
+    re-proves it is skipped and the prototype itself stands in as the prepared
+    native input — a parsed shape is private to its parse, and its only
+    consumer measures bounds without meshing. Anything else (a new or changed
+    prototype, an eager-only or alternate-codec entry, a missing object) takes
+    the ordinary path, and a forced build never calls this.
+    """
+    from cadgen.store.index import read_entry
+    from cadgen.store.objects import has_object
+
+    wrapped = getattr(shape, "wrapped", shape)
+    payload = _shape_brep_bytes(wrapped)
+    digest = hashlib.sha256(payload).hexdigest()
+    if has_object(digest):
+        colors = effective_face_colors(
+            wrapped, getattr(shape, "cad_face_ordinal_colors", None) if face_colors is None else face_colors,
+        )
+        content = geometry_component_hash("bintools-v4", payload, colors)
+        entry = {"kind": "native", "codec": "bintools-v4", "brep": digest,
+                 "faceColors": colors, "contentHash": content}
+        indexed = read_entry("component", _component_id(content)) or {}
+        published = {key: value for key, value in indexed.items() if key not in ("schemaVersion", "color")}
+        if published and canonical_json_bytes(published) == canonical_json_bytes(entry):
+            prototype = _build123d_shape_from_topods(wrapped)
+            prototype.cad_face_ordinal_colors = dict(colors)
+            return {"entry": entry, "payload": payload, "shape": prototype, "surface": None}
+    return prepare_geometry_component(shape, face_colors=face_colors)
 
 
 def decode_geometry_component(entry: dict[str, Any], payload: bytes) -> Any:

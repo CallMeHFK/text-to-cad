@@ -30,7 +30,12 @@ as a leak hedge; its model binds a fresh worker on the next request.
 
 Workers read frames on a thread so every read honours a timeout: a worker that
 hangs before announcing itself, or mid-job, is reported instead of blocking its
-caller forever.
+caller forever. Either way "hangs" means silence with no CPU progress. Mid-job, a
+running job beats (``worker._heartbeat``), and a worker whose heartbeat a
+GIL-holding native call starves is still computing, which its CPU clock shows
+(``Worker.frames``). Starting, a worker imports the kernel, a few CPU seconds that
+a busy machine spreads over minutes; it is waited for while its clock moves
+(``Worker._announced``).
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ import itertools
 import json
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -52,7 +58,13 @@ DEFAULT_SPARES = 2
 DEFAULT_RECYCLE_AFTER = 1000
 DEFAULT_IDLE_UNBIND_SECONDS = 600.0
 BORROWED_SURPLUS_IDLE_SECONDS = 2.0
+# A starting worker that has not announced itself after this long has its CPU clock
+# read, and another window begins while the clock moves (``Worker._announced``).
 SPAWN_TIMEOUT_SECONDS = 120.0
+# A silent worker whose CPU clock advanced at least this much across the silent window
+# is computing inside a native call that holds the GIL, not hung. A stopped process or
+# a deadlock accrues ~0; one that is paging under memory pressure still accrues some.
+BUSY_CPU_SECONDS = 0.1
 _USE_SEQUENCE = itertools.count()
 
 
@@ -130,6 +142,93 @@ def describe_exit(status: int | None) -> str:
     return f"exited with code {status}"
 
 
+def _parse_cpu_time(text: str) -> float:
+    """``ps -o time=``: ``[[DD-]HH:]MM:SS[.ss]``; minutes may exceed 59 (BSD/macOS)."""
+    days, _, clock = text.strip().rpartition("-")
+    seconds = 0.0
+    for part in clock.split(":"):
+        seconds = seconds * 60 + float(part)
+    return seconds + (int(days) * 86400 if days else 0)
+
+
+_WINDOWS_STILL_ACTIVE = 259  # GetExitCodeProcess's answer for a process that has not exited
+
+
+def _windows_cpu_seconds(pid: int) -> float | None:
+    """GetProcessTimes for a LIVE process; ``None`` once it has exited.
+
+    ``OpenProcess`` succeeds on an exited process for as long as anyone still
+    holds a handle to it -- its parent's ``Popen`` does -- and GetProcessTimes
+    then reports the dead process's final times. That is a frozen clock, which
+    is exactly what a live-but-starved heartbeat check must not see, so an
+    exited process reads as "no clock", as it does from /proc and ``ps``.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.GetProcessTimes.argtypes = (wintypes.HANDLE, *(ctypes.POINTER(wintypes.FILETIME),) * 4)
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        exit_code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return None
+        # A process that itself exits with 259 reads as live here; no worker does.
+        if exit_code.value != _WINDOWS_STILL_ACTIVE:
+            return None
+        created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+        if not kernel32.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited),
+                                        ctypes.byref(kernel), ctypes.byref(user)):
+            return None
+        return sum((t.dwHighDateTime << 32 | t.dwLowDateTime) for t in (kernel, user)) / 1e7
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+# Where ``ps`` lives on macOS, the BSDs and Linux. The daemon runs with whatever
+# PATH started it (a launchd job, an IDE, a stripped CI environment), and a CPU
+# clock it cannot read turns a busy worker into a killed one.
+_PS_PATHS = ("/bin/ps", "/usr/bin/ps")
+
+
+def _ps_executable() -> str:
+    """``ps`` by absolute path, ``PATH`` only when it is in neither usual place."""
+    for candidate in _PS_PATHS:
+        if os.access(candidate, os.X_OK):
+            return candidate
+    return shutil.which("ps") or "ps"
+
+
+def process_cpu_seconds(pid: int) -> float | None:
+    """User + system CPU seconds process ``pid`` has used, read from outside it.
+
+    ``None`` when the platform will not say. Read only when a worker has gone silent,
+    so the ``ps`` spawn on macOS costs nothing in the common case.
+    """
+    try:
+        if sys.platform.startswith("linux"):
+            with open(f"/proc/{pid}/stat", encoding="ascii") as handle:
+                fields = handle.read().rsplit(")", 1)[1].split()
+            return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+        if os.name == "nt":
+            return _windows_cpu_seconds(pid)
+        output = subprocess.check_output(
+            [_ps_executable(), "-o", "time=", "-p", str(pid)],
+            text=True, timeout=5, stderr=subprocess.DEVNULL,
+        )
+        return _parse_cpu_time(output) if output.strip() else None
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return None
+
+
 _TIMED_OUT = object()  # _read_frame: the wait elapsed; distinct from None (pipe closed)
 
 
@@ -151,7 +250,13 @@ class Worker:
         # as a fresh request; nested SUBMITS ignore this on purpose (client.run_nested).
         env["CADGEN_DAEMON_CHILD"] = "1"
         self.proc = subprocess.Popen(
-            [sys.executable, "-m", "cadgen.daemon.worker"],
+            # -P: `python -m` would put its working directory, the temp folder below,
+            # first on the import path. Whatever other programs leave there would then
+            # shadow a build's imports (STORE.md §9), and each import that misses it
+            # lists that folder again once anything in it changes: tens of listings of a
+            # folder of tens of thousands of entries per start, every start contending
+            # for the same folder, so a burst of starts never finished importing.
+            [sys.executable, "-P", "-m", "cadgen.daemon.worker"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None,
             # Spares can remain idle before their first request.  Start them in the
             # same stable directory worker._park uses between jobs so they never pin
@@ -171,15 +276,43 @@ class Worker:
         self._frames: queue.Queue = queue.Queue()
         self._reader = threading.Thread(target=self._pump, name="cadgen-worker-frames", daemon=True)
         self._reader.start()
-        ready = self._read_frame(timeout=SPAWN_TIMEOUT_SECONDS)
-        if ready is _TIMED_OUT:
-            ready = None
-        if not ready or "ready" not in ready:
+        self.pid = self._announced()
+
+    def _announced(self) -> int:
+        """The pid the worker announces once it has imported what its jobs need.
+
+        Judged as a running job is (``frames``): silence is a hang only when the CPU
+        clock stands still too. Importing the kernel takes a few CPU seconds, and a
+        machine whose cores are busy, or that is starting many workers at once, spreads
+        them over minutes, so a fixed wait failed starts that were still importing. After
+        each silent window the process's clock is read from outside; a start that used
+        less than ``BUSY_CPU_SECONDS`` in it (stopped, deadlocked, or on a platform that
+        will not say) is killed. A process that ends first is reported by how it ended;
+        what it printed is in the daemon's log, where its stderr goes.
+        """
+        cpu_seen = 0.0  # a new process has used no CPU
+        while True:
+            frame = self._read_frame(timeout=SPAWN_TIMEOUT_SECONDS)
+            if frame is not _TIMED_OUT:
+                break
+            cpu_now = process_cpu_seconds(self.proc.pid)
+            if cpu_now is not None and cpu_now - cpu_seen >= BUSY_CPU_SECONDS:
+                cpu_seen = cpu_now
+                continue
             self.kill()
             raise WorkerGone(
-                "worker did not announce itself" + ("" if ready else f" within {SPAWN_TIMEOUT_SECONDS:.0f}s")
+                f"worker {self.proc.pid} did not announce itself: it was silent for "
+                f"{SPAWN_TIMEOUT_SECONDS:.0f}s with no CPU progress while starting, and was killed"
             )
-        self.pid = int(ready["ready"])
+        if isinstance(frame, dict) and "ready" in frame:
+            return int(frame["ready"])
+        status = self._exit_status() if frame is None else None
+        self.kill()
+        if frame is None:
+            raise WorkerGone(f"worker {self.proc.pid} {describe_exit(status)} before announcing itself",
+                             exit_status=status)
+        said = frame.get("data", frame) if isinstance(frame, dict) else frame
+        raise WorkerGone(f"worker {self.proc.pid} wrote {str(said).strip()[:200]!r} before announcing itself")
 
     def _pump(self) -> None:
         stream = self.proc.stdout
@@ -226,17 +359,39 @@ class Worker:
     def frames(self, *, silence_timeout: float | None = None):
         """Yield frames until the terminating one, which is yielded last.
 
-        ``silence_timeout`` bounds the wait for ANY frame; a worker silent that
-        long is reported as gone (its process is killed) rather than waited for.
+        ``silence_timeout`` bounds the wait for ANY frame, heartbeats included. A
+        running job beats every few seconds, so silence that long means the
+        interpreter is not being scheduled. Before calling that a hang, the worker's
+        CPU clock is read from outside: if it advanced past ``BUSY_CPU_SECONDS``
+        since the last sign of life, a native call holding the GIL (a long OCCT
+        boolean) is starving the heartbeat and the wait continues for another
+        window. Otherwise — stopped, deadlocked, or a clock this platform will not
+        report — the worker is killed and reported as gone. Heartbeats are
+        consumed here, never yielded: to the relay and the ledger they do not exist.
         """
+        cpu_seen: float | None = None  # the worker's CPU seconds at its last sign of life
+        phase: str | None = None
         while True:
             frame = self._read_frame(timeout=silence_timeout)
             if frame is _TIMED_OUT:
+                cpu_now = process_cpu_seconds(self.proc.pid)
+                if cpu_now is not None and (cpu_seen is None or cpu_now - cpu_seen >= BUSY_CPU_SECONDS):
+                    # With no baseline (no beat yet) the next window decides.
+                    cpu_seen = cpu_now
+                    continue
                 self.kill()
                 raise WorkerGone(
                     f"worker {getattr(self, 'pid', self.proc.pid)} went silent for "
-                    f"{silence_timeout:.0f}s and was killed"
+                    f"{silence_timeout:.0f}s with no CPU progress"
+                    f"{f' (last phase: {phase})' if phase else ''} and was killed"
                 )
+            heartbeat = frame.get("heartbeat") if isinstance(frame, dict) else None
+            if heartbeat is not None:
+                if isinstance(heartbeat, dict):
+                    cpu = heartbeat.get("cpu")
+                    cpu_seen = float(cpu) if isinstance(cpu, (int, float)) else cpu_seen
+                    phase = heartbeat.get("phase") or phase
+                continue
             if frame is None:
                 status = self._exit_status()
                 raise WorkerGone(
@@ -360,11 +515,13 @@ class Pool:
 
     # --- acquire / release -------------------------------------------------------
 
-    def acquire(self, model: str = "", *, dependency: bool = False) -> Worker:
+    def acquire(self, model: str = "", *, dependency: bool = False, on_start=None) -> Worker:
         """A worker for ``model``, or an explicit memory-admission failure.
 
         ``model`` is the script path (the routing key); "" means a request with
-        no model subject, which borrows a spare without binding it.
+        no model subject, which borrows a spare without binding it. ``on_start``
+        is called when no warm worker can take the request and one is started for
+        it, before that wait.
         """
         with self._cv:
             if self._closed:
@@ -402,6 +559,8 @@ class Pool:
                 self._active_pending += 1
         if worker is None:
             try:
+                if on_start is not None:
+                    on_start()
                 worker = self._spawn()
             except BaseException:
                 with self._cv:
@@ -556,7 +715,7 @@ class Pool:
     def unbind_idle(self) -> None:
         """A bound worker idle for ``idle_unbind_seconds()`` returns to the spare set
         (spares beyond K exit). Its model's next build rebinds a spare -- no import
-        repaid, a cold RAM op-memo tier. This only releases process state;
+        repaid. This only releases process state;
         persistent cache objects remain available to the replacement worker.
 
         Subject-less burst workers get a much shorter grace so the next browser

@@ -4,8 +4,7 @@ import * as THREE from "three";
 
 import {
   SOURCE_SIDECAR_SCHEMA_VERSION,
-  loadKinematicsModuleDefinition,
-  previewKinematicsModuleDefinition
+  loadKinematicsModuleDefinition
 } from "./kinematicsModule.js";
 import { resolveStepModuleFeatures } from "./stepModule.js";
 import { buildStepModuleContext, createStepModuleEffectsApi } from "./stepModuleEffects.js";
@@ -110,13 +109,6 @@ test("a saved sidecar load requires the resolved STEP digest", async (t) => {
     () => loadKinematicsModuleDefinition(SIDECAR_URL),
     /saved sidecar load requires the STEP documentHash/
   );
-});
-
-test("preview kinematics compile without fetching a saved sidecar", () => {
-  const definition = previewKinematicsModuleDefinition(KINEMATICS, { cadPath: "hinge.step" });
-  assert.ok(definition);
-  assert.equal(definition.cadPath, "hinge.step");
-  assert.deepEqual(Object.keys(definition.manifest.parameters), ["swing"]);
 });
 
 test("no sidecar url means nothing to load", async () => {

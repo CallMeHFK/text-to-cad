@@ -24,14 +24,9 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def _record_input(step_path: Path | str, *, reader: str) -> Path:
-    """Resolve a STEP a model asked for, and declare it a build input.
-
-    Both public readers go through here, because "which cadgen function records
-    what it reads" must not be a thing anyone has to remember: they all do. The
-    engine's own internal loads go straight to
-    :mod:`cadgen._internal.step_scene` and are unaffected — a build must not
-    record its own output as its input.
+def _resolve_input(step_path: Path | str, *, reader: str) -> Path:
+    """Resolve a STEP a model asked for: it must exist, and must not be an
+    output of the model reading it. The build's trace sees the read itself.
     """
     resolved = Path(step_path).expanduser().resolve()
     if not resolved.is_file():
@@ -41,10 +36,8 @@ def _record_input(step_path: Path | str, *, reader: str) -> Path:
             "inputs on its file: Path(__file__).parent / '../STEP/part.step'."
         )
     from cadgen._internal.self_input import refuse_own_output
-    from cadgen._internal.source_hash import note_discovered_input
 
     refuse_own_output(resolved, reader=reader)
-    note_discovered_input(resolved)
     return resolved
 
 
@@ -58,7 +51,7 @@ def read_scene(step_path: Path | str) -> StepScene:
     """
     from cadgen._internal.doors import STEP_SUFFIXES, document_target
 
-    path = _record_input(step_path, reader="read_scene")
+    path = _resolve_input(step_path, reader="read_scene")
     document_target(path, suffixes=STEP_SUFFIXES)
     from cadgen._internal.step_scene_package import load_step_scene_cached
 
@@ -170,17 +163,19 @@ class StepScene:
     def resolve(self, ref: str) -> Selection:
         """Resolve one numeric ref, exact label alias, or file-prefixed ref.
 
+        A file prefix -- the path under the viewer's root, or an absolute path --
+        must name this scene's document as a path does (links resolved, a relative
+        one read from the working directory, else matched against the end of the
+        document's path).
         Ambiguous labels raise with numbered candidates. A bare entity ID
         (e.g. #f1) requires exactly one leaf. No fuzzy matching or first match.
         """
-        from cadgen.cad_ref_syntax import parse_selector, path_has_suffix
+        from cadgen.cad_ref_syntax import parse_selector, ref_prefix_names, split_cad_ref
         from cadgen.label_refs import resolve_label_selectors
 
-        text = ref.strip()
-        if "#" in text:
-            prefix, text = text.split("#", 1)
-            if prefix and not path_has_suffix(str(self._loaded.step_path), prefix):
-                raise ValueError(f"reference names {prefix!r}, but this scene is {str(self._loaded.step_path)!r}")
+        prefix, text = split_cad_ref(ref)
+        if prefix and not ref_prefix_names(prefix, str(self._loaded.step_path)):
+            raise ValueError(f"reference names {prefix!r}, but this scene is {str(self._loaded.step_path)!r}")
         parsed = parse_selector(text)
         if parsed is None or parsed.selector_type == "opaque":
             raise ValueError(f"invalid reference: {ref!r}; pass one occurrence or entity ref")
@@ -266,7 +261,7 @@ class StepScene:
 
 
 def read_step(step_path: Path | str, *, label: str | None = None) -> Any:
-    """Read a STEP file as build123d geometry, AND record it as a build input.
+    """Read a STEP file as build123d geometry.
 
     Usable in a ``@step`` body (composing a vendor part into an assembly) and in
     a ``@dxf`` body (deriving a cut profile from one) alike. The returned shape
@@ -278,17 +273,10 @@ def read_step(step_path: Path | str, *, label: str | None = None) -> Any:
     warm read, a cold parse and ``import_step`` agree by construction
     (``cadgen.store.build.build_tree_through_step``).
 
-    **The recording is the point.** Freshness used to follow a model's Python
-    import reach only, which is observable: modules announce themselves. A file
-    read as data announces nothing, so a model built from a vendor STEP went on
-    reporting itself current after that STEP was replaced, and the only way to
-    get the truth back was ``--force``. Reading through this function declares
-    the file: its path and content hash join the model's closure, and the next
-    run's gate re-hashes it (design/dxf-build123d.md).
-
-    A missing file raises here rather than deep inside the importer, because
+    Inside a build the file is an input, as every file a build reads is, and a
+    model's own output is refused. A missing file raises here rather than deep inside the importer, because
     "the vendor STEP is not where the model thinks it is" is the whole message.
     """
     from cadgen._internal.step_scene import import_step
 
-    return import_step(_record_input(step_path, reader="read_step"), label=label)
+    return import_step(_resolve_input(step_path, reader="read_step"), label=label)

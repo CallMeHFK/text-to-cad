@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createElement } from "react";
 import { EDGELESS_VIEW_FEATURES, resolveViewSettings, viewSettingsAreCustom } from "@text-to-cad/core/common/viewSettings.js";
 import { elements, render } from "../../../../scripts/reactHarness.mjs";
 import { DISPLAY_MODE_OPTIONS } from "./DisplayModeOptions.js";
@@ -51,6 +52,36 @@ test("group edits are sparse and disabling discards only that group's overrides"
   view.unmount();
 });
 
+test("Floor finish sits right of Floor position on one two-column row, Matte until Glossy is chosen", () => {
+  const view = panel({ mode: "render" });
+  const floor = sections(view.tree).find(section => section.title === "Floor");
+  const row = elements(floor.content).find(node => node.type?.name === "FileSheetFieldGrid"
+    && elements(node.props.children).some(child => child.props?.label === "Floor finish"));
+  assert.equal(row.props.columns ?? 2, 2);
+  const selects = elements(row.props.children).filter(node => node.props?.label);
+  assert.deepEqual(selects.map(select => select.props.label), ["Floor position", "Floor finish"]);
+  const finish = selects[1];
+  assert.equal(finish.props.value, "matte");
+  assert.deepEqual(finish.props.options.map(option => [option.value, option.label]), [["matte", "Matte"], ["glossy", "Glossy"]]);
+  finish.props.onValueChange("glossy");
+  assert.deepEqual(view.settings().floor, { finish: "glossy" });
+  assert.equal(viewSettingsAreCustom(view.settings()), true);
+  view.unmount();
+});
+
+test("Render's Floor position is Lowest point until Model origin is chosen, which is Custom", () => {
+  const view = panel({ mode: "render" });
+  const floor = sections(view.tree).find(section => section.title === "Floor");
+  const position = elements(floor.content).find(node => node.props?.label === "Floor position");
+  assert.equal(position.props.value, "lowest");
+  assert.deepEqual(position.props.options.map(option => [option.value, option.label]), [["origin", "Model origin"], ["lowest", "Lowest point"]]);
+  assert.equal(viewSettingsAreCustom(view.settings()), false);
+  position.props.onValueChange("origin");
+  assert.deepEqual(view.settings().floor, { placement: "origin" });
+  assert.equal(viewSettingsAreCustom(view.settings()), true);
+  view.unmount();
+});
+
 test("projection and tools update independent groups; only the view change is Custom", () => {
   const view = panel({ mode: "solid" });
   // Explode is a STEP tool with its own panel, and writes the same store.
@@ -99,4 +130,21 @@ test("a file that is not a CAD model has no Edges section and only the presets n
   assert.equal(later.getSnapshot().scene.view.appearance, "dark");
   later.configure({ appearance: "light" });
   assert.equal(later.getSnapshot().scene.view.edges.enabled, false);
+});
+
+test("Display holds the file's view alone, its first heading ending in the X its dropdown hands it; the host's settings are Settings', not Display's", () => {
+  const view = panel();
+  assert.deepEqual(sections(view.tree).map(section => section.title), ["Display", "Surfaces", "Edges", "Grid / Axes", "Lighting", "Background", "Floor"]);
+  const named = tree => elements(sections(tree)[0].headingAction).map(node => node.props?.["aria-label"]).filter(Boolean);
+  // Drawn alone, its first heading has its Reset and nothing else.
+  assert.deepEqual(named(view.tree), ["Reset"]);
+  view.unmount();
+  // In its dropdown, Reset then the dropdown's X (`close`: `DisplayPopoverClose`): the dropdown has no heading of its own.
+  const store = createViewSettingsStore({});
+  const { display: settings, scene } = store.getSnapshot();
+  const close = createElement("button", { "aria-label": "Close display settings" });
+  const dropdown = render(DisplaySettingsSection, { viewSettings: settings, resolvedView: scene.view,
+    onViewSettingsPatch: store.patch, onGroupEnabledChange: store.setEnabled, close });
+  assert.deepEqual(named(dropdown.tree), ["Reset", "Close display settings"]);
+  dropdown.unmount();
 });

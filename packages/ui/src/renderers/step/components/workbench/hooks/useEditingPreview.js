@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  editingPreviewEntry, initialEditingPreview, reduceEditingPreview,
-} from "../../../workbench/editingPreview.js";
+import { initialEditingPreview, reduceEditingPreview } from "../../../workbench/editingPreview.js";
 import { observeEditingPreview } from "../../../workbench/editingPreviewFeed.js";
 
-export function useEditingPreview(file, { enabled, catalogEntry, client } = {}) {
+// The build feed's status for `file`. The view shows the saved file; when a build finishes, or the
+// file moves past one, the catalog is read at once, so the saved file replaces the one on screen
+// without waiting for the catalog's next poll.
+export function useEditingPreview(file, { enabled, client } = {}) {
   const [snapshot, setSnapshot] = useState(() => ({ file: "", state: initialEditingPreview() }));
   useEffect(() => {
     if (!enabled || !file) return undefined;
@@ -20,11 +21,9 @@ export function useEditingPreview(file, { enabled, catalogEntry, client } = {}) 
   }, [file, enabled, client]);
   const state = useMemo(() => enabled && snapshot.file === file
     ? snapshot.state : initialEditingPreview(), [enabled, file, snapshot]);
-  const entry = useMemo(() => editingPreviewEntry(state, catalogEntry), [
-    state.preview, state.revision, state.output, state.file,
-    state.previewUnavailable,
-    state.saved?.tree, state.saved?.documentHash,
-    state.retainedSaved?.tree, state.retainedSaved?.documentHash, catalogEntry,
-  ]);
-  return { entry, state };
+  const settled = state.superseded === true || state.state === "done";
+  useEffect(() => {
+    if (settled && file) void client?.refresh?.({ file, markRefreshing: false })?.catch?.(() => {});
+  }, [settled, file, client, state.revision]);
+  return { state };
 }

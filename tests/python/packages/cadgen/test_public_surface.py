@@ -91,7 +91,13 @@ ADAPTERS: dict[str, frozenset[str]] = {
     # The one validator that cannot be a mirror: `--packages NAME=PATH` is
     # repeatable, and a repeatable key/value map is outside the derivable set.
     "urdf validate": frozenset({"path", "strict", "packages", "verbose"}),
-
+    # A host starts it and speaks MCP on its standard streams; it takes no options. Where the
+    # install came from is in the server's environment, which the plugin's startup config sets: an
+    # older cadgen ignores an environment variable it does not know, never a flag
+    # (`cadgen/_internal/channel.py`).
+    "mcp": frozenset(),
+    # The person's analytics choice: status, on or off.
+    "analytics": frozenset({"action"}),
 }
 
 # Commands not yet re-homed under the schema. This set only shrinks.
@@ -100,10 +106,9 @@ UNCLASSIFIED = {
     "store",
     "daemon",
     "daemon status",
-    # The viewer launcher owns its parser: the launch contract (reuse-or-start,
-    # port roll, the --json announce line) is not a function signature to mirror.
+    # The viewer launcher owns its parser: the launch contract (reuse, replace or
+    # start on its one port, the --json announce line) is not a function signature to mirror.
     "viewer",
-    "viewer list",
     "viewer stop",
 }
 
@@ -191,6 +196,24 @@ class Manifest(unittest.TestCase):
         cadgen.step(model)
         declared = authoring.registered_model(this_file)
         self.assertEqual({d.fmt for d in declared.mesh_exports}, {"stl"})
+
+    def test_a_model_hands_out_no_raw_body(self):
+        # A model's body runs in its own build, reached through a pin. The
+        # wrapper does not hand it out, so nothing (``inspect.unwrap``,
+        # ``arm.__wrapped__()``) can run it inline behind a caller's closure.
+        import inspect
+
+        import cadgen
+        from cadgen import authoring
+        from cadgen.store.index import model_ref
+
+        def shape():
+            return None
+
+        self.addCleanup(authoring._REGISTRY.pop, model_ref(Path(__file__).resolve(), "shape"), None)
+        wrapped = cadgen.step(shape)
+        self.assertFalse(hasattr(wrapped, "__wrapped__"))
+        self.assertIs(inspect.unwrap(wrapped), wrapped)
 
     def test_the_retired_commands_are_gone(self):
         # No backwards compatibility: `cadgen import` folded into the STEP

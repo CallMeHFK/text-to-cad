@@ -25,8 +25,11 @@ import { ViewerMemoryLimitError } from "../../../render/viewerMemoryPolicy.js";
 // making the first paint wait: the first batch is SMALLER than the old fixed
 // one, so first geometry arrives sooner than it did.
 //
-// First ceilings. The load order puts the model's six extreme components first,
-// so eight components already span it for the one camera framing.
+// First ceilings. The camera frames the box the descriptor declares (`bbox`)
+// from the first publish, so what that publish holds decides only what is drawn
+// first; the load order puts the model's six extreme components first, so eight
+// components already span the model on screen, and span the frame of a
+// descriptor that declares no box.
 export const PROGRESSIVE_PUBLISH_FIRST_COMPONENTS = 8;
 export const PROGRESSIVE_PUBLISH_FIRST_BYTES = 8 * 1024 * 1024;
 // Last ceilings, once doubling reaches them. A batch this size is roughly the
@@ -121,6 +124,41 @@ export function meshStateIsComplete(meshState) {
   }
   const missing = meshState.meshData.missingComponentIds;
   return !(Array.isArray(missing) && missing.length > 0);
+}
+
+// A rewritten file whose next revision is not built yet: the entry has no mesh while its render
+// artifact (re)builds, and the complete model of this same file is the one on screen. It stays
+// there, reported as an update, until the new revision replaces it atomically
+// (`shouldRetainCompleteSameFileMesh`): once a model has been shown, a rebuild never takes it down.
+export function awaitingSameFileRevision(current, entry) {
+  return Boolean(entry?.file) &&
+    String(current?.file || "") === String(entry.file) &&
+    meshStateIsComplete(current);
+}
+
+// What the viewer SHOWS while a same-file revision loads, whatever the entry's kind: the complete
+// model on screen until the new one is published. (`shouldRetainCompleteSameFileMesh` is the
+// loader's own, narrower question: whether to stage an assembly's replacement atomically.)
+export function replacingSameFileMesh(current, entry, targetMeshHash) {
+  return String(current?.file || "") === String(entry?.file || "") &&
+    String(current?.meshHash || "") !== String(targetMeshHash || "") &&
+    meshStateIsComplete(current);
+}
+
+// Whether the model on screen stays while `entry`'s revision loads: through the rebuild, while the
+// entry has no mesh yet, and through the load of its new mesh. Whatever the model is -- a part, an
+// assembly, one with motion -- an edit is an update, never the loading screen again.
+export function retainsPreviousStepMesh(current, entry, { entryHasMesh, meshHash }) {
+  return entryHasMesh
+    ? Boolean(meshHash) && replacingSameFileMesh(current, entry, meshHash)
+    : awaitingSameFileRevision(current, entry);
+}
+
+// What stays on screen when a load is cancelled part-way (a newer revision, or another file):
+// the partial composition that load published for its file goes, a complete model -- a part's as
+// much as an assembly's -- stays, and another file's state is not the cancelled load's to touch.
+export function meshStateAfterCancelledLoad(current, cancelledFile) {
+  return current && current.file === cancelledFile && !meshStateIsComplete(current) ? null : current;
 }
 
 export function shouldRetainCompleteSameFileMesh(current, entry, targetMeshHash) {
@@ -244,10 +282,12 @@ function occurrenceTranslation(transform) {
 
 // Load order: the components placed at the model's extreme positions (per-axis
 // min and max occurrence translation, up to six cids) come first, then the rest
-// in descriptor order. The viewer frames the camera ONCE per model, on the
-// first publish (the viewport's framed-model gate), so the first batch must
-// span the model: without this the first 32 components of a hand could all be
-// one fingertip and the rest of the model would arrive outside the frame. The
+// in descriptor order, so the first paint already spans the model rather than
+// showing 32 components of one fingertip of a hand. The viewer frames the
+// camera ONCE per model, on the first publish, on the box the descriptor
+// declares (`bbox`), which this order does not change. A descriptor without
+// one is framed on its first batch and again when the last component lands,
+// and this order keeps that first frame close to the final one. The
 // descriptor carries no component bounds, so the placement is the proxy.
 export function orderComponentsForProgressiveLoad(descriptor) {
   const entries = Object.entries(descriptor?.components || {});

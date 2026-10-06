@@ -113,3 +113,5 @@ test("lighting and floor edits do not invalidate geometry settings, and no-op ed
   assert.equal(updates, 0);
   assert.equal(store.getSnapshot(), after);
 });
+
+

@@ -8,9 +8,9 @@ import { createServer } from 'node:http';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 
-// A viewer whose box changes size in ONE layout step (the file tree opening, the tool
-// stack widened, a window snap) must paint the model at the new size in the very frame
-// that layout lands in. The canvas is sized 100% by CSS, so a drawing buffer or a render
+// A viewer whose box changes size in ONE layout step (the tool stack widened, a window
+// snap) must paint the model at the new size in the very frame that layout lands in.
+// The canvas is sized 100% by CSS, so a drawing buffer or a render
 // left for a later frame shows the old picture stretched over the new box for a frame.
 //
 // A ResizeObserver callback runs after layout and before paint, and observers are called
@@ -37,7 +37,7 @@ async function serveHarness(t) {
   const temporary = await mkdtemp(join(tmpdir(), 'text-to-cad-resize-browser-'));
   let server, browser;
   t.after(async () => { await browser?.close(); if (server) await new Promise(resolve => server.close(resolve)); await rm(temporary, { recursive: true, force: true }); });
-  await build({ entryPoints: [fileURLToPath(new URL('../../harness/index.tsx', import.meta.url))], outfile: join(temporary, 'harness.js'), bundle: true, format: 'esm', platform: 'browser', conditions: ['production'], jsx: 'automatic', loader: { '.webp': 'dataurl', '.avif': 'dataurl', '.woff2': 'dataurl' } });
+  await build({ entryPoints: [fileURLToPath(new URL('../../harness/index.tsx', import.meta.url))], outfile: join(temporary, 'harness.js'), bundle: true, format: 'esm', platform: 'browser', conditions: ['production'], jsx: 'automatic', loader: { '.webp': 'dataurl', '.avif': 'dataurl', '.woff2': 'dataurl', '.svg': 'dataurl' } });
   const bundle = await readFile(join(temporary, 'harness.js'));
   const css = await readFile(new URL('../../../../dist/styles.css', import.meta.url));
   server = createServer((request, response) => {
@@ -48,10 +48,10 @@ async function serveHarness(t) {
     else if (url.pathname === '/styles.css') { response.setHeader('Content-Type', 'text/css'); response.end(css); }
     else if (url.pathname.endsWith('/__cad/catalog')) {
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ rootId: root, entries: Object.entries(FILES).map(([file, data]) => (
-        { kind: file.split('.').pop(), file, rootRelativeFile: file, url: `/${file}`, hash: `${root}-${file}`, bytes: data.length })) }));
+      response.end(JSON.stringify({ entries: Object.entries(FILES).map(([file, data]) => (
+        { kind: file.split('.').pop(), file: `/models/${file}`, url: `/${file}`, hash: `${root}-${file}`, bytes: data.length })) }));
     } else if (url.pathname.endsWith('/__cad/server')) {
-      response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ rootId: root, rootPath: '/models', backend: 'cadgen' }));
+      response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ backend: 'cadgen' }));
     } else if (FILES[name]) { response.setHeader('Content-Type', 'application/octet-stream'); response.end(FILES[name]); }
     else { response.setHeader('Content-Type', 'text/html'); response.end(`<!doctype html><html><head><link rel="stylesheet" href="/styles.css">${HARNESS_SIZE}</head><body><div id="root"></div><script type="module" src="/harness.js"></script></body></html>`); }
   });
@@ -90,7 +90,7 @@ async function serveHarness(t) {
 }
 
 // Opening over: no draw call for longer than the viewport's open-fit window. Opening settles
-// in steps (the open fit, the panel column, the projection), each a draw, and until it has been
+// in steps (the open fit, the projection), each a draw, and until it has been
 // quiet for OPEN_FIT_SETTLE_MS (600 ms, `ShellViewport.jsx`) a resize re-fits instead of
 // rescaling. Awaited as a quiet spell, however long a slow GL takes to reach it.
 const idle = page => page.waitForFunction(() => new Promise(resolve => {
@@ -193,7 +193,7 @@ function assertPaintedAtNewSize(record, ratio, settled, label) {
 test('a viewer resized in one step paints the model at its new size in that same frame', async (t) => {
   const { open } = await serveHarness(t);
   const { page, pane, errors } = await open();
-  // Let opening settle (the open fit, the panel column, the projection) before resizing.
+  // Let opening settle (the open fit, the projection) before resizing.
   await idle(page);
   await installProbe(page);
   const ratio = await restingRatio(page);
@@ -214,13 +214,15 @@ test('a viewer resized in one step paints the model at its new size in that same
   const [widened] = await page.evaluate(() => window.__resizeProbe.records);
   assertPaintedAtNewSize(widened, ratio, await settledSignature(page), 'one-step widening');
 
-  // 3. The person's own one-step resize: the file tree opening beside the viewer.
+  // 3. The file explorer, which the file's name opens, floats OVER the viewer: its box keeps its
+  //    size, so nothing is resized.
   await page.evaluate(() => window.__resizeProbe.mark());
-  await pane.locator('[data-file-panel][aria-label="Show files"]').click();
-  await page.waitForFunction(() => window.__resizeProbe.records.length > 0);
-  const [treeOpened] = await page.evaluate(() => window.__resizeProbe.records);
-  assert.ok(treeOpened.cssWidth < 780, `the file tree took room from the viewer (${treeOpened.cssWidth}px)`);
-  assertPaintedAtNewSize(treeOpened, ratio, await settledSignature(page), 'file tree opening');
+  await pane.locator('[data-file-name]').click();
+  await page.locator('[data-file-explorer]').waitFor();
+  await frames(page, 2);
+  assert.deepEqual(await page.evaluate(() => window.__resizeProbe.records), [], 'opening the explorer resized nothing');
+  await page.keyboard.press('Escape');
+  await page.locator('[data-file-explorer]').waitFor({ state: 'detached' });
 
   // 4. A drag resizes once per frame; every frame is painted at its own size, and the
   //    viewport draws no more than one picture per frame to do it.

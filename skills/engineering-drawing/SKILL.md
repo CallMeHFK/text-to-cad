@@ -1,6 +1,7 @@
 ---
 name: engineering-drawing
 description: Make an engineering drawing of a part as a PDF - orthographic views with hidden lines and centre marks, real dimensions, hole callouts, notes and a title block on ISO sheets, all projected from the part's geometry so the drawing follows the model. Use when the user asks for a drawing, a dimensioned sheet, shop or manufacturing drawings, a print, or "2D views of this part".
+license: MIT
 ---
 
 # Engineering drawing
@@ -20,6 +21,16 @@ you chose to override a value.
 operating system opens. No DXF is written, nothing is paired or linked, and
 there is no CLI: the script is the interface. `$dxf` makes cut layouts and flat
 patterns, which are toolpaths, not documents; the two are different jobs.
+
+## Setup
+
+Run cadgen through [uv](https://docs.astral.sh/uv/), so this skill's commands share
+one installation, and its warm build daemon, with the CAD app's server:
+
+- `cadgen` below means `uvx --no-config --managed-python --python 3.13 --from cadgen==0.7.15 cadgen`
+- `python` below means `uvx --no-config --managed-python --python 3.13 --from cadgen==0.7.15 python`
+
+The first run downloads that installation; later runs reuse it.
 
 ## Workflow
 

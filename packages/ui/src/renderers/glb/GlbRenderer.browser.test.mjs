@@ -42,7 +42,7 @@ const HARNESS_SIZE = '<style>#root > div { width: 800px !important; height: 500p
 let temporary, server, browser;
 before(async () => {
   temporary = await mkdtemp(join(tmpdir(), 'text-to-cad-glb-browser-'));
-  await build({ entryPoints: [fileURLToPath(new URL('../harness/index.tsx', import.meta.url))], outfile: join(temporary, 'harness.js'), bundle: true, format: 'esm', platform: 'browser', conditions: ['production'], jsx: 'automatic', loader: { '.webp': 'dataurl', '.avif': 'dataurl', '.woff2': 'dataurl' } });
+  await build({ entryPoints: [fileURLToPath(new URL('../harness/index.tsx', import.meta.url))], outfile: join(temporary, 'harness.js'), bundle: true, format: 'esm', platform: 'browser', conditions: ['production'], jsx: 'automatic', loader: { '.webp': 'dataurl', '.avif': 'dataurl', '.woff2': 'dataurl', '.svg': 'dataurl' } });
   const bundle = await readFile(join(temporary, 'harness.js'));
   const css = await readFile(new URL('../../../dist/styles.css', import.meta.url));
   server = createServer((request, response) => {
@@ -53,10 +53,10 @@ before(async () => {
     else if (url.pathname === '/styles.css') { response.setHeader('Content-Type', 'text/css'); response.end(css); }
     else if (url.pathname.endsWith('/__cad/catalog')) {
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ rootId: root, entries: Object.entries(FILES).map(([file, data]) => (
-        { kind: 'glb', file, rootRelativeFile: file, url: `/${file}`, hash: `${root}-${file}`, bytes: data.length })) }));
+      response.end(JSON.stringify({ entries: Object.entries(FILES).map(([file, data]) => (
+        { kind: 'glb', file: `/models/${file}`, url: `/${file}`, hash: `${root}-${file}`, bytes: data.length })) }));
     } else if (url.pathname.endsWith('/__cad/server')) {
-      response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ rootId: root, rootPath: '/models', backend: 'cadgen' }));
+      response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ backend: 'cadgen' }));
     } else if (FILES[name]) { response.setHeader('Content-Type', 'model/gltf-binary'); response.end(FILES[name]); }
     else { response.setHeader('Content-Type', 'text/html'); response.end(`<!doctype html><html><head><title>Host title</title><link rel="stylesheet" href="/styles.css">${HARNESS_SIZE}</head><body><div id="root"></div><script type="module" src="/harness.js"></script></body></html>`); }
   });
@@ -91,14 +91,17 @@ async function open(t, file, { record = null } = {}) {
 
 const ready = pane => pane.locator('[aria-busy="false"] > div > canvas').first().waitFor();
 
-// A GLB has no tools; its Display settings are the button beside Preview.
+// A GLB has no interaction tools, so no strip; its Display settings are the navbar's button beside Preview.
 const noTools = async (pane) => {
   assert.equal(await pane.getByRole('group', { name: 'Interaction tools' }).count(), 0, 'a static GLB has no tools, so no strip');
-  assert.equal(await pane.getByRole('button', { name: 'Display settings', exact: true }).count(), 1, 'its Display settings are the button beside Preview');
+  assert.equal(await displayButton(pane).count(), 1, 'its Display settings are the navbar\'s button beside Preview');
   for (const name of ['Orbit', 'Draw', 'Select', 'Measure', 'Position', 'Animate']) {
     assert.equal(await pane.getByRole('button', { name, exact: true }).count(), 0, name);
   }
 };
+const displayButton = pane => pane.locator('[data-viewport-actions]').getByRole('button', { name: 'Display', exact: true });
+// Display's settings: a dropdown, portaled out of the viewer.
+const displayPanel = pane => pane.page().locator('[data-display-popover]');
 // The viewport's own pixels, without any chrome over them: what a host capture returns.
 async function capture(page) {
   const encoded = await page.evaluate(async () => {
@@ -148,19 +151,18 @@ async function stillCapture(page) {
   }
   assert.fail('the view never came to rest');
 }
-// A capture that shows `expected` exactly, once the change that leads to it has landed.
+// A capture that shows `expected` exactly, once the change that leads to it has landed: a capture
+// at another size is that change still landing (the navbar coming back after preview resizes the view).
 async function captureMatching(page, expected, message) {
   let differing = -1;
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    differing = differingPixels(expected, await capture(page));
+    const next = await capture(page);
+    differing = next.width === expected.width && next.height === expected.height ? differingPixels(expected, next) : Infinity;
     if (differing === 0) return;
     await settle(page);
   }
   assert.equal(differing, 0, message);
 }
-// The nav row's panel toggles, in order, each with whether its panel is the open one.
-const panels = pane => pane.locator('[data-file-panel]')
-  .evaluateAll(buttons => buttons.map(button => `${button.getAttribute('aria-label')}:${button.getAttribute('aria-pressed')}`));
 const display = (page, patch) => page.evaluate(next => window.cadHarness.a.controller.setDisplaySettings(next), patch);
 
 test('a static GLB opens on its native scene with no tools: display settings, orbit, host commands and state all work', async (t) => {
@@ -171,25 +173,25 @@ test('a static GLB opens on its native scene with no tools: display settings, or
   // Nothing of a GLB picks, measures, poses or is drawn on: the viewport simply
   // orbits, pans and zooms, with no strip over it.
   await noTools(pane);
-  assert.equal(await pane.getByRole('button', { name: /Copy|Add to prompt/i }).count(), 0, 'no copy-references action');
+  assert.equal(await pane.locator('[data-quick-edit]').count(), 0, 'Quick Edit is a STEP file\'s: a GLB has nothing to pick');
+  assert.equal(await pane.locator('[data-viewport-actions]').getByRole('button', { name: 'Preview', exact: true }).count(), 1,
+    'a GLB is 3D: Preview sits on top of its cube');
 
   // A GLB has no panel of its own: its only settings are Display's, and Display is never
-  // where a file opens. So it opens with the column shut and the model given the room.
-  assert.deepEqual(await panels(pane), ['Show files:false']);
+  // where a file opens, so the model has the room.
   assert.equal(await pane.locator('[data-tool-panel]').count(), 0, 'nothing in the tool stack');
-  await pane.getByRole('button', { name: 'Display settings', exact: true }).click();
-  await pane.page().locator('[data-display-popover]').waitFor();
-  assert.deepEqual(await panels(pane), ['Show files:false']);
-  const displayMenu = page.locator('[data-display-popover]');
-  assert.equal(await displayMenu.getByRole('tab').count(), 0, 'the popover has no tabs inside it');
+  await displayButton(pane).click();
+  await displayPanel(pane).waitFor();
+  const displayMenu = displayPanel(pane);
+  assert.equal(await displayMenu.getByRole('tab').count(), 0, 'Display has no tabs inside it');
   assert.deepEqual(await displayMenu.getByRole('combobox', { name: 'Mode', exact: true }).innerText(), 'Solid');
   await displayMenu.getByRole('combobox', { name: 'Mode', exact: true }).click();
   assert.deepEqual(await page.getByRole('option').allInnerTexts(), ['Solid', 'Render', 'Grid'], 'a GLB has no edges to draw: Solid and Render only');
   await page.keyboard.press('Escape');
   assert.equal(await displayMenu.getByRole('heading', { name: 'Surfaces', exact: true }).count(), 1);
   for (const section of ['Edges', 'Cross-section', 'Explode']) assert.equal(await displayMenu.getByRole('heading', { name: section, exact: true }).count(), 0, section);
-  await pane.getByRole('button', { name: 'Display settings', exact: true }).click();
-  await pane.page().locator('[data-display-popover]').waitFor({ state: 'detached' });
+  await displayButton(pane).click();
+  await displayPanel(pane).waitFor({ state: 'detached' });
   // The column closing reaches the scene as a resize; let that frame land before comparing pictures.
   await page.waitForFunction(() => document.querySelector('[data-testid="one"] [aria-busy] > div > canvas').width >= 790);
   await settle(page);
@@ -255,7 +257,7 @@ test('a static GLB opens on its native scene with no tools: display settings, or
   });
   assert.deepEqual(camera.position.map(Math.round), [90, -70, 60]);
   const state = await page.evaluate(() => window.cadHarness.a.controller.readState());
-  assert.deepEqual([state.resource.path, state.revision, state.loading, state.selection], ['static.glb', 'one-static.glb', false, []]);
+  assert.deepEqual([state.resource.path, state.revision, state.loading, state.selection], ['/models/static.glb', 'one-static.glb', false, []]);
   const declined = await page.evaluate(() => window.cadHarness.a.controller.select({ selectors: ['o1.f1'] }).then(() => '', error => error.message));
   assert.match(declined, /A GLB has nothing to select/);
   assert.match(await page.evaluate(() => window.cadHarness.a.controller.clearSelection().then(() => '', error => error.message)), /no selection to clear/);
@@ -272,18 +274,18 @@ test('a static GLB opens on its native scene with no tools: display settings, or
   assert.equal(await page.getByRole('menu').count(), 0);
   assert.deepEqual(await page.evaluate(() => window.nativeMenu), [true]);
 
-  // The navbar snapshot goes through the prompt port.
-  await pane.getByRole('button', { name: 'Take snapshot', exact: true }).click();
+  // A host's capture request goes through the prompt port: the view, of the whole file.
+  await page.evaluate(() => window.cadHarness.capture());
   await page.waitForFunction(() => window.cadHarness.captures.length === 1);
   const captured = await page.evaluate(() => window.cadHarness.captures[0]);
-  assert.deepEqual([captured.file, captured.type, captured.references.length], ['static.glb', 'image/png', 1]);
+  assert.deepEqual([captured.file, captured.type, captured.references.length], ['/models/static.glb', 'image/png', 1]);
   assert.deepEqual(captured.references[0].target, { kind: 'whole-resource' });
 
   // Camera and Display settings belong to this file under this renderer's id, and survive a remount.
   await display(page, { surfaces: { colorMode: 'single', color: '#00c040' }, grid: { enabled: false } });
-  await page.waitForFunction(() => window.cadHarness.state.renderers?.[JSON.stringify(['static.glb', 'glb'])]?.display?.surfaces?.colorMode === 'single');
+  await page.waitForFunction(() => window.cadHarness.state.renderers?.[JSON.stringify(['/models/static.glb', 'glb'])]?.display?.surfaces?.colorMode === 'single');
   const stored = await page.evaluate(() => window.cadHarness.state.renderers);
-  assert.deepEqual(Object.keys(stored), [JSON.stringify(['static.glb', 'glb'])], 'keyed by [path, renderer id]');
+  assert.deepEqual(Object.keys(stored), [JSON.stringify(['/models/static.glb', 'glb'])], 'keyed by [absolute path, renderer id]');
   const left = await page.evaluate(() => window.cadHarness.a.controller.readState());
   await page.evaluate(() => window.cadHarness.mounted(false));
   await pane.locator('canvas').first().waitFor({ state: 'detached' });
@@ -303,8 +305,8 @@ test('a static GLB opens on its native scene with no tools: display settings, or
 test('an animated GLB opens at rest, plays in preview, and leaving preview puts it back at rest', async (t) => {
   // The file's Playback settings as a previous session left them: Orbit off, so the preview
   // camera holds still and what moves in a capture is the model alone.
-  const { page, pane, errors } = await open(t, 'animated.glb', { record: { version: 1, settings: {},
-    files: { [JSON.stringify(['one', 'animated.glb', 'glb'])]: { version: 2, playback: { orbit: false } } } } });
+  const { page, pane, errors } = await open(t, 'animated.glb', { record: { version: 2, settings: {},
+    files: { [JSON.stringify(['/models/animated.glb', 'glb'])]: { version: 2, playback: { orbit: false } } } } });
   await ready(pane);
   assert.equal(await pane.getByRole('toolbar', { name: 'Animation playback' }).count(), 0);
   assert.equal(await pane.getByRole('button', { name: 'Animate', exact: true }).count(), 0, 'no Animate tool');
@@ -350,8 +352,8 @@ test('an animated GLB opens at rest, plays in preview, and leaving preview puts 
   assert.deepEqual(await page.evaluate(() => window.__cadStage().studioGround), floor);
 
   // Preview orbits every GLB: the Orbit this file's record turned off is one tick away in
-  // Playback settings, and ticked, the preview camera turns.
-  await pane.getByRole('toolbar', { name: 'Animation playback' }).getByRole('button', { name: 'Playback settings', exact: true }).click();
+  // Playback settings, where Display sat on top of the cube, and ticked, the preview camera turns.
+  await pane.locator('[data-preview-corner]').getByRole('button', { name: 'Playback settings', exact: true }).click();
   const orbit = page.getByRole('menuitemcheckbox', { name: 'Orbit', exact: true });
   assert.equal(await orbit.getAttribute('aria-checked'), 'false', "the file's choice");
   const held = await page.evaluate(() => window.__cadCamera().position);
@@ -368,6 +370,9 @@ test('a corrupt GLB raises the viewer\'s load alert, with reload and details', a
   await alert.waitFor();
   assert.match(await alert.innerText(), /Couldn’t load the model/);
   assert.match(await alert.innerText(), /broken\.glb/);
-  await noTools(pane);
+  // Nothing on screen is the file's to work on: the card alone, with no tools or view actions.
+  for (const name of ['Display', 'Preview']) {
+    assert.equal(await pane.getByRole('button', { name, exact: true }).count(), 0, `no ${name} over a failed load`);
+  }
   void page;
 });

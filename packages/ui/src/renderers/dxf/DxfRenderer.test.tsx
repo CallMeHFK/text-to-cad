@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createCadClient } from '@text-to-cad/core/client';
@@ -14,7 +14,7 @@ import SAMPLE from './__fixtures__/sample.drawing.json';
 // encoder are stand-ins — what is PAINTED is the browser suite's; what the tab offers, what the
 // cursor says and what a host is told are decided here, above the pixels.
 
-const FILE = 'sample.dxf';
+const FILE = '/models/sample.dxf';
 
 // Every transform the drawing is painted at: the picture itself is not jsdom's to draw.
 const painted = vi.hoisted(() => [] as Array<{ scale: number; offsetX: number; offsetY: number }>);
@@ -24,10 +24,17 @@ vi.mock('@text-to-cad/core/lib/drawing2d/index.js', async (importOriginal) => {
 });
 
 const noop = () => {};
+const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
+
+// The file as the backend serves it: a test rewrites it, and decides how its next read answers.
+let revision = 'one-sample';
+let readDrawing: () => Response | Promise<Response> = () => json(SAMPLE);
 const context2d = new Proxy({}, { get: (_target, key) => (key === 'canvas' ? undefined : noop), set: () => true });
 
 beforeEach(() => {
   painted.length = 0;
+  revision = 'one-sample';
+  readDrawing = () => json(SAMPLE);
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => setTimeout(() => callback(performance.now()), 0));
   vi.stubGlobal('cancelAnimationFrame', (handle: number) => clearTimeout(handle));
   vi.stubGlobal('matchMedia', (query: string) => ({ matches: false, media: query, addEventListener: noop, removeEventListener: noop, addListener: noop, removeListener: noop }));
@@ -43,20 +50,18 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
-
 /** One pane of the harness: a host, a workspace, host commands and a live binding, and the tab. */
-async function openDrawing() {
+async function openDrawing(destinationKind = 'composer', notice: ReactNode = null) {
   const fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = new URL(String(input));
     if (url.pathname.endsWith('/__cad/catalog')) {
-      return json({ rootId: 'one', entries: [{ kind: 'dxf', file: FILE, rootRelativeFile: FILE, url: `/${FILE}`, hash: 'one-sample', bytes: 4096 }] });
+      return json({ entries: [{ kind: 'dxf', file: FILE, url: '/sample.dxf', hash: revision, bytes: 4096 }] });
     }
-    if (url.pathname.endsWith('/__cad/server')) return json({ rootId: 'one', rootPath: '/models', backend: 'cadgen' });
-    if (url.pathname.endsWith('/__cad/drawing')) return json(SAMPLE);
+    if (url.pathname.endsWith('/__cad/server')) return json({ backend: 'cadgen' });
+    if (url.pathname.endsWith('/__cad/drawing')) return readDrawing();
     return new Response('', { status: 404 });
   });
-  const client = createCadClient({ origin: 'http://viewer.test/one', workspaceId: 'one', pollIntervalMs: 0, fetch: fetch as typeof globalThis.fetch });
+  const client = createCadClient({ origin: 'http://viewer.test/one', pollIntervalMs: 0, fetch: fetch as typeof globalThis.fetch });
   await client.refresh();
 
   let commandSnapshot: Record<string, any> = {};
@@ -76,13 +81,12 @@ async function openDrawing() {
   const live = { bind(next: unknown) { controller = next; return () => { controller = null; }; } };
   const renderers = [createDxfRenderer({ client, commands, live })];
 
-  const destination = { kind: 'composer', available: true };
+  const destination = { kind: destinationKind, available: destinationKind !== 'unavailable' };
   const delivered: Array<{ type: string; parts: string[] }> = [];
   const host = {
     files: {
-      id: 'one', rootName: 'one',
-      stat: async (path: string) => ({ path, name: path, kind: 'file', size: 400, extension: 'dxf' }),
-      list: async () => [{ path: FILE, name: FILE, kind: 'file' }]
+      id: 'one',
+      stat: async (path: string) => ({ path, name: path.split('/').pop(), kind: 'file', size: 400, extension: 'dxf' })
     },
     navigation: { openFile: noop },
     environment: { colorScheme: 'light' },
@@ -91,15 +95,17 @@ async function openDrawing() {
       getSnapshot: () => destination, subscribe: () => noop,
       deliver: async (context: any) => {
         const attachment = context.parts.find((part: any) => part.kind === 'attachment');
-        const blob = await attachment.content;
-        delivered.push({ type: blob.type, parts: context.parts.map((part: any) => part.kind) });
+        const blob = attachment ? await attachment.content : null;
+        delivered.push({ type: blob?.type ?? '', parts: context.parts.map((part: any) => part.kind) });
         return { status: 'added', partIds: context.parts.map((part: any) => part.id) };
       }
     }
   };
   function Pane() {
-    const [state, setState] = useState<any>({ panel: null, renderers: {} });
-    return <section data-testid="one"><FileViewer file={FILE} host={host as any} renderers={renderers} state={state} onStateChange={setState} /></section>;
+    const [state, setState] = useState<any>({ renderers: {} });
+    // The host's Settings, as `CadViewer` hands it over: drawn by FileViewer over every file.
+    return <section data-testid="one"><FileViewer file={FILE} host={host as any} renderers={renderers} state={state} onStateChange={setState} notice={notice}
+      settings={<button type="button" aria-label="Settings" />} /></section>;
   }
   render(<Pane />);
   const pane = screen.getByTestId('one');
@@ -111,7 +117,8 @@ async function openDrawing() {
   });
   // The fitted picture is on the canvas.
   await waitFor(() => expect(painted.length).toBeGreaterThan(0));
-  return { pane, canvas, commands, request, delivered, get controller() { return controller; }, dispose: () => client.dispose() };
+  const refresh = () => act(async () => { await client.refresh(); });
+  return { pane, canvas, commands, request, delivered, refresh, get controller() { return controller; }, dispose: () => client.dispose() };
 }
 
 it('the cursor says the drawing can be dragged, and says so louder while it is', async () => {
@@ -129,31 +136,43 @@ it('the cursor says the drawing can be dragged, and says so louder while it is',
   dispose();
 });
 
-it('a DXF has no panels of its own, no tools and no preview', async () => {
+it("the host's notice shows at the top-right once the drawing is on screen", async () => {
+  const { pane, dispose } = await openDrawing('composer', <div role="dialog" aria-label="Allow Analytics" />);
+  expect(within(pane).getByRole('dialog', { name: 'Allow Analytics' }).closest('[data-viewport-top-right]')).not.toBeNull();
+  dispose();
+});
+
+it('a DXF has no panels of its own, no tools, no Display and no preview', async () => {
   const { pane, delivered, dispose } = await openDrawing();
-  // The nav row's only panel is the host's file tree, closed: a drawing declares none.
-  const panels = [...pane.querySelectorAll('[data-file-panel]')]
-    .map(button => `${button.getAttribute('aria-label')}:${button.getAttribute('aria-pressed')}`);
-  expect(panels).toEqual(['Show files:false']);
   expect(pane.querySelectorAll('[data-tool-panel]')).toHaveLength(0);
   const inPane = within(pane);
   expect(inPane.queryByRole('group', { name: 'Interaction tools' })).toBeNull();
   for (const name of ['Orbit', 'Draw', 'Select', 'Measure', 'Position', 'Animate', 'Preview',
-    'Switch to 2D view', 'Switch to 3D view', 'Display settings', 'Zoom in', 'Zoom out', 'Reset Zoom', 'Zoom to fit', 'Zoom controls']) {
+    'Switch to 2D view', 'Switch to 3D view', 'Display', 'Display settings', 'Zoom in', 'Zoom out', 'Reset Zoom', 'Zoom to fit', 'Zoom controls']) {
     expect(inPane.queryByRole('button', { name }), name).toBeNull();
   }
   expect(inPane.queryAllByRole('tab')).toHaveLength(0);
-  // What a drawing offers: a snapshot, and nothing else.
-  const snapshot = await waitFor(() => {
-    const button = inPane.getByRole('button', { name: 'Take snapshot' }) as HTMLButtonElement;
-    expect(button.disabled).toBe(false);
-    return button;
-  });
-  // The snapshot is the drawing as a PNG, delivered through the host's prompt destination.
-  fireEvent.click(snapshot);
-  await waitFor(() => expect(delivered).toHaveLength(1));
-  expect(delivered[0].type).toBe('image/png');
-  expect(delivered[0].parts).toContain('attachment');
+  // A drawing is 2D: it has none of a 3D view's controls on top of the cube (Display, Preview).
+  expect(pane.querySelector('[data-viewport-actions]')).toBeNull();
+  // A composer gets no snapshot from a drawing, and a drawing has nothing to pick: no Quick Edit,
+  // which is a STEP file's.
+  expect(inPane.queryByRole('button', { name: 'Take snapshot' })).toBeNull();
+  expect(pane.querySelector('[data-viewport-bottom-actions]')).toBeNull();
+  expect(pane.querySelector('[data-quick-edit]')).toBeNull();
+  expect(delivered).toHaveLength(0);
+  dispose();
+});
+
+it('a DXF has no snapshot in the navbar, whatever the destination: its note to the agent is Quick Edit\'s', async () => {
+  const { pane, dispose } = await openDrawing('clipboard');
+  await waitFor(() => expect(pane.querySelector('canvas')).not.toBeNull());
+  expect(within(pane).queryByRole('button', { name: 'Take snapshot' })).toBeNull();
+  dispose();
+});
+
+it('a DXF in a host with no prompt workflow has no snapshot', async () => {
+  const { pane, dispose } = await openDrawing('unavailable');
+  expect(within(pane).queryByRole('button', { name: 'Take snapshot' })).toBeNull();
   dispose();
 });
 
@@ -193,5 +212,30 @@ it('a select-reference request is consumed without a notification', async () => 
   // Declined silently: no alert, no status, and the drawing is still the drawing.
   expect(within(pane).queryByRole('alert')).toBeNull();
   expect(pane.querySelector('[data-drawing-surface] canvas')).not.toBeNull();
+  dispose();
+});
+
+it('a rewritten drawing stays on screen while its next revision is read, and after one that will not read', async () => {
+  const { pane, canvas, refresh, dispose } = await openDrawing();
+  let release = noop;
+  readDrawing = () => new Promise(resolve => { release = () => resolve(json(SAMPLE)); });
+  revision = 'two-sample';
+  await refresh();
+  // The same drawing on the same canvas, nothing covering it: the update is said top-centre.
+  expect(await within(pane).findByText('Updating drawing…')).toBeTruthy();
+  expect(pane.querySelector('[data-drawing-surface] canvas')).toBe(canvas);
+  expect(pane.querySelector('[aria-busy="true"]')).not.toBeNull();
+  expect(pane.textContent).not.toContain('Reading drawing');
+  await act(async () => { release(); });
+  await waitFor(() => expect(pane.querySelector('[aria-busy="false"]')).not.toBeNull());
+  expect(within(pane).queryByText('Updating drawing…')).toBeNull();
+
+  // A revision that will not read leaves the last drawing to use, with the failure beside it.
+  readDrawing = () => new Response('the drawing is truncated', { status: 500 });
+  revision = 'three-sample';
+  await refresh();
+  expect(await within(pane).findByText(/The existing drawing remains visible/)).toBeTruthy();
+  expect(pane.querySelector('[data-drawing-surface] canvas')).toBe(canvas);
+  expect(pane.textContent).not.toContain('Reading drawing');
   dispose();
 });

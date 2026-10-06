@@ -26,3 +26,29 @@ it('keeps its state across repeated identical failures and identical updates', (
   act(() => update({ epoch: 'e1', revision: 1, state: 'ready' }));
   expect(result.current.state).toBe(ready);
 });
+
+// The view shows the saved file: when a build finishes, or the file moves past one, the catalog is
+// read at once, so the saved file replaces the one on screen without waiting for its next poll.
+it('reads the catalog again at once when a build finishes or the file moves past it', () => {
+  let update: (next: unknown) => void = () => {};
+  const refreshes: unknown[] = [];
+  const client = {
+    observeEditingPreview: (_file: string, onUpdate: any) => { update = onUpdate; return () => {}; },
+    refresh: (options: unknown) => { refreshes.push(options); return Promise.resolve(); },
+  };
+  const { result } = renderHook(() => useEditingPreview('part.step', { enabled: true, client }));
+  act(() => update({ epoch: 'e1', revision: 1, state: 'building' }));
+  expect(refreshes).toEqual([]);
+  act(() => update({ epoch: 'e1', revision: 1, state: 'done' }));
+  expect(refreshes).toEqual([{ file: 'part.step', markRefreshing: false }]);
+  act(() => update({ epoch: 'e1', revision: 1, state: 'done', superseded: true }));
+  expect(refreshes).toHaveLength(1);
+  // The next build is followed again, and its finish read again.
+  act(() => update({ epoch: 'e1', revision: 2, state: 'building' }));
+  act(() => update({ epoch: 'e1', revision: 2, state: 'failed', error: 'boom' }));
+  expect(refreshes).toHaveLength(1);
+  expect(result.current.state.error).toBe('boom');
+  act(() => update({ epoch: 'e1', revision: 2, state: 'failed', superseded: true }));
+  expect(refreshes).toHaveLength(2);
+  expect(result.current.state.error).toBe('');
+});

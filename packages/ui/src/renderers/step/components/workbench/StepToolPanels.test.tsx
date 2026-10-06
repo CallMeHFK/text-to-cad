@@ -12,7 +12,6 @@ import ToolPanel from '../../../../../dist/renderers/kit/tools/ToolPanel.js';
 import ToolStack from '../../../../../dist/renderers/kit/tools/ToolStack.js';
 import { TOOL_PANEL_WIDTH } from '../../../../../dist/renderers/kit/tools/toolStackLayout.js';
 import { ViewerMobileContext } from '../../../../../dist/file-viewer/responsive.js';
-import { createStepRenderer } from '../../index.js';
 
 // The STEP renderer's panels in the tool stack — Select's Features and its mode, the kept effects
 // (Explode, Clip), Position — each where it is decided, under the stack that holds them. The
@@ -45,11 +44,12 @@ const modeling = { descriptor, results: { c: { tree } }, error: null, retryFaile
 const rows = () => [...document.querySelectorAll('[aria-label="Modeling tree"] button')].map(button => button.getAttribute('aria-label'))
   .filter(label => /^(?:Select|Expand|Collapse) /.test(label || ''));
 const locks = () => [...document.querySelectorAll<HTMLElement>('[aria-label="Modeling tree"] [data-disclosure-locked]')].map(mark => mark.dataset.disclosureLocked);
-const features = () => screen.getByRole('region', { name: 'Features' });
+// The Features panel, on screen or closed (`hidden`, still mounted).
+const features = () => document.querySelector<HTMLElement>('section[data-tool-panel][aria-label="Features"]')!;
 const shown = () => [...document.querySelectorAll<HTMLElement>('[data-cad-tool-stack] section[data-tool-panel]')].filter(node => !node.hidden).map(node => node.getAttribute('aria-label'));
 
 /** The layout a host keeps, applying what the stack writes back. */
-function useLayout(initial: any = { panels: {}, collapsed: {} }) {
+function useLayout(initial: any = { panels: {}, collapsed: {}, closed: {} }) {
   const [layout, setLayout] = useState<any>(initial);
   return [layout, (patch: any) => setLayout((current: any) => ({ ...current, ...(typeof patch === 'function' ? patch(current) : patch) }))] as const;
 }
@@ -67,10 +67,10 @@ function Features({ mode = 'all', initialLayout = undefined as any, mobile = fal
 }
 const storedLayout = () => JSON.parse(document.querySelector('[data-layout]')!.getAttribute('data-layout')!);
 
-it("Select's mode button sits in the Features filter row beside the fold chevron, and each mode holds the tree: Parts a row per part, Faces everything open, locked; All the person's own tree again", () => {
+it("Select's mode button sits in the Features filter row beside its X, and each mode holds the tree: Parts a row per part, Faces everything open, locked; All the person's own tree again", () => {
   const view = render(<Features />);
   expect([...features().querySelectorAll('[data-slot=tree-filter] button')].map(button => button.getAttribute('aria-label')))
-    .toEqual(['Select mode: All', 'Collapse features']);
+    .toEqual(['Select mode: All', 'Close features']);
   // All: the tree is the person's own — open the base.
   expect(rows()).toEqual(['Expand base', 'Select base', 'Expand arm', 'Select arm']);
   fireEvent.click(screen.getByRole('button', { name: 'Expand base' }));
@@ -93,32 +93,39 @@ it("Select's mode button sits in the Features filter row beside the fold chevron
   expect(locks()).toEqual([]);
 });
 
-it('typing into a folded Features filter opens the panel and keeps every key; the mode menu and chevron step aside while the box has focus', async () => {
+it("Features closes by the X at its filter row's end, kept mounted with its filter and expansion; the mode menu and the X step aside while the box has focus", async () => {
   const user = userEvent.setup();
-  render(<Features initialLayout={{ panels: {}, collapsed: { tree: true } }} />);
-  expect(features().hasAttribute('data-collapsed')).toBe(true);
+  render(<Features />);
   const search = screen.getByRole('textbox', { name: 'Filter model' }) as HTMLInputElement;
   expect(search.getAttribute('placeholder')).toBe('Filter…');
-  // The trailing controls (the mode menu, the chevron) yield to a focused box (`tree-filter.jsx`).
+  // The trailing controls (the mode menu, the X) yield to a focused box (`tree-filter.jsx`).
   expect(features().querySelector('[data-tree-filter-trailing]')!.className).toContain('group-has-[input:focus]/filter:hidden');
+  expect(within(features()).queryByRole('button', { name: /^(?:Collapse|Expand) features$/ })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Expand base' }));
   await user.click(search);
   await user.keyboard('ba');
-  expect(search.value).toBe('ba');
-  expect(features().hasAttribute('data-collapsed')).toBe(false);
-  expect(storedLayout().collapsed).toEqual({});
-  expect(await within(features()).findByRole('button', { name: 'Select base' })).toBeTruthy();
   expect(within(features()).getByRole('status').textContent).toMatch(/match/);
+  fireEvent.click(within(features()).getByRole('button', { name: 'Close features' }));
+  expect(shown()).toEqual([]);
+  expect(features().hasAttribute('data-closed')).toBe(true);
+  expect(storedLayout().closed).toEqual({ tree: true });
+  // Still mounted: the box keeps what was typed.
+  expect((screen.getByRole('textbox', { name: 'Filter model', hidden: true }) as HTMLInputElement).value).toBe('ba');
 });
 
-it("on a phone Features starts folded to its filter row, and opened takes the whole column; on desktop it is open, half the column, and the person's to widen", () => {
+it("on a phone Features starts closed, and opened takes the whole column; on desktop it is open, half the column, and the person's to size by its corner", () => {
   const phone = render(<Features mobile />);
-  expect(features().hasAttribute('data-collapsed')).toBe(true);
-  fireEvent.click(within(features()).getByRole('button', { name: 'Expand features' }));
-  expect(features().style.maxHeight).toBe(`${STACK_HEIGHT}px`);
+  expect(shown()).toEqual([]);
+  expect(features().hasAttribute('data-closed')).toBe(true);
   phone.unmount();
+  // Opened on a phone (Select's press writes this: `RendererShell.jsx`), it takes the whole column.
+  const opened = render(<Features mobile initialLayout={{ panels: {}, collapsed: {}, closed: { tree: false } }} />);
+  expect(shown()).toEqual(['Features']);
+  expect(features().style.maxHeight).toBe(`${STACK_HEIGHT}px`);
+  opened.unmount();
   render(<Features />);
-  expect(features().hasAttribute('data-collapsed')).toBe(false);
-  expect(screen.getByRole('separator', { name: 'Resize features width' })).toBeTruthy();
+  expect(shown()).toEqual(['Features']);
+  expect([...features().querySelectorAll('[role=separator]')].map(handle => handle.getAttribute('aria-label'))).toEqual(['Resize features']);
   expect(features().style.maxHeight).toBe(`${STACK_HEIGHT / 2}px`);
 });
 
@@ -327,7 +334,3 @@ it("Position is headed with its Reset and its X, offers Default beside a named p
   expect(onClose).toHaveBeenCalledOnce();
 });
 
-it("a STEP declares no panel of its own, so no pick or tool of it can open or turn the host's column: its panels are the tool stack's", () => {
-  const step = createStepRenderer({ client: {} as never });
-  expect('panels' in step).toBe(false);
-});

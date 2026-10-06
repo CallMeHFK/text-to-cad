@@ -64,10 +64,6 @@ test("entry mesh signatures distinguish assemblies from simple mesh sidecars", (
     entryMeshAssetSignature({ kind: "stl", url: "/mesh.stl", hash: "stl-hash", appearanceHash: "ignored" }),
     "stl-hash"
   );
-  assert.equal(
-    entryMeshAssetSignature(stepEntry({ hash: "preview-tree", appearanceHash: "saved-finish", editingPreview: true })),
-    "preview-tree"
-  );
   assert.equal(entryMeshAssetHash({
     kind: "stl",
     url: "/mesh.stl",

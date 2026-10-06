@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 from unittest import mock
 
@@ -79,6 +82,38 @@ class PythonTestRunnerIsolation(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "explicit test-owned address"):
                 retire_owned_daemon("developer")
             self.assertEqual(connect.call_count, 1)
+
+
+class HangGuard(unittest.TestCase):
+    def test_a_hung_file_fails_by_name_with_its_stack(self):
+        # A hung file once held a CI job silent for 42 minutes, until it was cancelled.
+        with tempfile.TemporaryDirectory() as scratch:
+            top = os.path.realpath(scratch)
+            hung = Path(top, "test_hung_fixture.py")
+            hung.write_text(
+                "import threading, unittest\n\n\n"
+                "class Hung(unittest.TestCase):\n"
+                "    def test_waits_forever(self):\n"
+                "        threading.Event().wait()\n",
+                encoding="utf-8",
+            )
+            report = io.StringIO()
+            with contextlib.chdir(top), mock.patch.object(runner, "FILE_HANG_SECONDS", 1), \
+                    mock.patch.object(runner.sys, "stderr", report):
+                code = runner.run_in_parallel([str(hung)], top, 2, False)
+        self.assertEqual(code, 1)
+        self.assertIn("in test_waits_forever", report.getvalue())
+        self.assertIn(f"failing modules:\n  {hung}", report.getvalue())
+
+    def test_a_windows_childs_summary_still_parses(self):
+        # Read back from a file, a Windows child's \r\n reaches the parser untranslated:
+        # once, every module of a passing Windows run counted as one with no summary.
+        with tempfile.TemporaryFile() as stream:
+            stream.write(b"..\r\n" + b"-" * 70 + b"\r\nRan 2 tests in 0.010s\r\n\r\nOK (skipped=1)\r\n")
+            output = runner._read_back(stream)
+        self.assertTrue(runner._RAN.search(output))
+        self.assertEqual(runner._counts(output)["tests"], 2)
+        self.assertEqual(runner._counts(output)["skipped"], 1)
 
 
 if __name__ == "__main__":

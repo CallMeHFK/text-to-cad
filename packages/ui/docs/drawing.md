@@ -41,8 +41,9 @@ does. In CAD, Draw's controls are its **Drawing** panel in the tool stack while
 Draw is up (`layout="panel"`): one wrapping row, the tools then Color, Undo, Redo
 and Clear drawing, with no separator and no headings. Picking a tool changes the
 Draw button's icon. Pressing Draw again puts it down; leaving Draw ends the
-session. The viewport’s Copy Drawing action,
-which copies the view with its ink to the host's clipboard as a PNG, appears only
+session. The Drawing panel's **Copy**,
+which copies the view with its ink to the host's clipboard as a PNG (the same view
+is Quick Edit's sketch), appears only
 while the sketch contains visible elements; clearing or undoing the last element
 hides it again. These styles depend on Excalidraw's pinned DOM; verify both hosts when
 upgrading.

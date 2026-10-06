@@ -2,20 +2,22 @@
 
 The published distribution: everything that turns CAD source into documents,
 documents into derived state, and derived state into pixels and meshes. One
-PyPI package carrying both language halves — the Python engine under
-`src/cadgen/`, and the built JavaScript it executes under
-`src/cadgen/_runtime/` (the shared JavaScript runtime and the CAD Viewer's client,
-bundled in at build time; the JS *source* lives in its own packages and never
-ships as source).
+PyPI package carrying the Python engine under `src/cadgen/` and what it executes
+that is not Python under `src/cadgen/_runtime/`: the shared JavaScript runtime and
+the CAD Viewer's client, bundled in at build time (the JS *source* lives in its own
+packages and never ships as source), and the native file tracer, one library per
+platform.
 
 **PURPOSE** — the engine and its command surface: model execution, the
 store, document assembly, kinematics, exports, validation, inspection,
-snapshots, the warm daemon and its build pool, and the CAD Viewer
-(`cadgen viewer`: a local HTTP server over the built client, one directory per
-instance).
+snapshots, the warm daemon and its build pool, the CAD Viewer
+(`cadgen viewer`: a local HTTP server over the built client, on port 3245 or the
+port `--port` names, serving every CAD file by its absolute path), and CAD beside an agent's chat (`cadgen mcp`: an MCP App server that
+an agent host starts, over the viewer's own routes: tabs in Codex, viewer cards
+in the chat for every other MCP Apps host).
 
 **MAY DEPEND ON** — the Python ecosystem it declares (OCP/build123d lazily,
-never at namespace-import time) and the bundled JavaScript runtime.
+never at namespace-import time) and the bundled runtime.
 Never app code, never JavaScript source at runtime.
 
 **DEPENDED ON BY** — every skill (as a pinned installed distribution). The
@@ -24,14 +26,13 @@ submits a document's compile as a job to the same build pool every door uses.
 
 ## The rest of the package's documentation
 
-This file holds the LAWS. Three documents beside it hold the mechanisms the
+This file holds the LAWS. Two documents beside it hold the mechanisms the
 laws constrain; a law that governs one links to it, and where a mechanism
 document and this one disagree, the mechanism document is right.
 
 | Document | What it is for | Go there when |
 |---|---|---|
 | [`STORE.md`](STORE.md) | The store's contract: layout, the two-sides law, tree/record shapes, the gate, invariants, link-vs-component, concurrency, GC, the daemon, lazy children, editing previews, debugging. Sectioned, with a table of contents | changing anything that writes to or reads from `~/.cache/cadgen`, or any build, door or reader that depends on it |
-| [`MEMO.md`](MEMO.md) | `@memo`: the author's purity contract, what declines reuse, and the three statements about process-wide geometric `Shape` identity while the decorator is installed | adding, using or diagnosing a memoized geometry factory — and before relying on `is_same`, `==` or `hash()` of a shape |
 | [`SNAPSHOTS.md`](SNAPSHOTS.md) | Snapshots: display presets, what a mesh, robot or drawing snapshot draws (the CAD Viewer's own scene for it), requests and OUT, sizes, and `--debug --json` — every measured browser stage, what each one covers, and which durations must not be added together | changing what a snapshot draws or accepts, or reading snapshot timings |
 
 ## The design laws
@@ -69,15 +70,17 @@ this one:
 
 | Mechanism | What it must not break | Specified in |
 |---|---|---|
-| Editing previews: an explicit session consumes the immutable preview tree an active build announces, before STEP persistence | saved-artifact read-back; no reader reaches source, closure or a model record | [`STORE.md`](STORE.md) §9b |
+| Build status: the viewer's feed says whether a build of a file is running or failed, never what it previews; the viewer shows the saved file | saved-artifact read-back; no reader reaches source, closure or a model record | [`STORE.md`](STORE.md) §9b |
 | Composition: what a decorated call returns, what a parent may consume before a child's save, and when an exact `Compound(children=[...])` keeps its children's pins | the link/component decision, declared-output completion, `isinstance(root, Compound)` | [`STORE.md`](STORE.md) §6, §9a |
 | Display surfaces: canonical trees pin encoded BREP and effective intrinsic face colors; SURF extraction is an artifact-only build-pool job under an attested producer | geometry completeness stays separate from display readiness — `read_step`, STEP re-emits and parent materialization never wait for SURF | [`STORE.md`](STORE.md) §2 |
+| Tree composition: an all-link parent's saved-document tree composed from its children's document trees instead of parsed from the STEP it just wrote | `index/document` holds the cold compile of the written bytes, the same tree either way; every ineligible case parses | [`STORE.md`](STORE.md) §3 |
+| STEP splicing: the same parent's STEP written from its children's saved STEP files instead of exported through OCCT | the cold compile of the spliced file is the exported file's; every ineligible case exports | [`STORE.md`](STORE.md) §3 |
 
 ### 2. The store contains only derived results
 
 `~/.cache/cadgen` is the store: content-addressed objects (a model's result
 tree and the components it is made of) and input-addressed index entries
-(the per-model record, the document → tree map, op-memo and tessellation
+(the per-model record, the document → tree map, bounds and tessellation
 entries) — data derivable from sources and documents, and nothing else. Its
 layout, formats, gate, two-sides law and invariants are the contract in
 [`STORE.md`](STORE.md); read it before touching anything that writes to or
@@ -91,12 +94,22 @@ that information is in the wrong place.
 
 **The store is what the sources imply; the sidecar is what the author meant.**
 
-There is no automatic GC: `cadgen store gc` is the only sweeper, and every
-object is immutable and idempotently written, so deletion never needs
-coordination — a racing reader re-misses and rebuilds. Store correctness needs
+The store holds itself to a size cap (`CADGEN_STORE_MAX`, default 20 GB): the
+daemon, when idle, evicts derived entries (mesh, surface, component, bounds,
+drawing) least recently written first and sweeps what nothing reaches, and
+retires on sight the index kinds an older cadgen left (`index/op`). A record,
+a document entry or an output entry is never evicted. `cadgen store gc` does
+the same by hand (`STORE.md` §8). A cadgen never judges what it cannot read:
+a store a newer cadgen wrote to within 30 days is left to that cadgen, and a
+folder it does not know is never touched. A read never writes the store, and a write
+that finds its bytes already present claims them, so deletion needs no
+coordination: a sweep keeps whatever a publish has claimed, and a racing
+reader re-misses and rebuilds. Store correctness needs
 no lock protocol: atomic writes, pins and the publish rule (`STORE.md` §5, §7)
 decide concurrent outcomes. Saved-file readers never wait for a source model
 to finish; missing derived artifacts are resolved through the build pool.
+*Pressure-test*: build a model and snapshot it, make the store read-only, then
+do both again: each succeeds and nothing under the store changes.
 
 ### 3. One sidecar per artifact, and it belongs to that artifact alone
 
@@ -124,12 +137,23 @@ A STEP or DXF is pure geometry. Provenance, kinematics, and context ride
 the sidecar; the artifact separated from everything else is a plain
 importable file.
 
-### 5. Byte determinism
+### 5. Byte determinism is the writers' promise, not the kernel's
 
-Same inputs, same bytes, every format — STEP (canonicalized NAUO ids and
-presentation-style ordering), meshes (one deterministic tessellator), DXF
-(geometry-ordered emitter). Content-addressing and every freshness ledger
-depend on it.
+cadgen's writers are pure: the same shapes give the same bytes, in every
+format — STEP (canonicalized NAUO ids and presentation-style ordering), meshes
+(one deterministic tessellator), DXF (geometry-ordered emitter). The geometry
+kernel makes no such promise. Two runs of one model can differ in a last digit
+or in the order of the pieces a boolean returns, and cadgen neither hides that
+nor depends on it. Equal bytes mean reuse; different bytes cost a
+recomputation (a re-mesh, a parent recompose) and never a wrong answer. A
+rebuild whose writer input is unchanged keeps its saved STEP instead of writing
+the same bytes again ([`STORE.md`](STORE.md) §3, `writerInput`).
+Content addresses stay byte hashes; whether a model runs is decided by its
+sources (`STORE.md` §4), never by its outputs being reproducible. Compare two
+builds by geometry within a tolerance, never by file hash.
+*Pressure-test*: build one model twice, each from an empty store. If the bytes
+differ, nothing fails, and the second build's outputs are as correct as the
+first's.
 
 ### 6. One surface, three faces
 
@@ -150,10 +174,11 @@ tessellated as stored. One name, one validator, no synonyms.
 Geometry queries are a Python library surface, separate from document-format
 verbs. `read_step(path)` returns build123d geometry; `read_scene(path)` returns
 revision-scoped occurrence/selector views with caller-owned world geometry.
-`cadgen.geometry` provides `closest_points`, `overlap_volume`,
-`topology_errors`, `boundary_edges`, `self_intersections` and `mass_properties`.
-These operations accept native geometry and return facts; selection, units,
-thresholds, exclusions and verdicts belong to the caller's script. The inspect
+`cadgen.geometry` provides `closest_points`, `overlap_volume`, `is_sound`,
+`topology_errors`, `boundary_edges`, `self_intersections` and
+`mass_properties`. These operations accept native geometry and return facts;
+selection, units, thresholds, exclusions and verdicts belong to the caller's
+script. The inspect
 CLI and `step.inspect` are removed, with an immediate migration error.
 The contracts live in [`step_scene.py`](src/cadgen/step_scene.py) and
 [`geometry.py`](src/cadgen/geometry.py). They import no kernel at namespace
@@ -186,6 +211,14 @@ the script's folder declares it the standard Python way (`PYTHONPATH=src`).
 *Pressure-test*: move a project's folders around and rebuild; cadgen must not
 care, only the project's imports may.
 
+A script may declare several models, and builds the ones its `__main__` calls.
+Its flags (`--force`, `--json`, `--verbose`, the mesh tolerances) apply to every
+model it builds: no flag names, selects or configures one of them. A command
+that addresses one model, such as `cadgen store why`, names it
+`script.py::function`; a bare `script.py` names its sole model, and a file that
+declares several must be named. *Pressure-test*: put two models in one file and
+call both from `__main__`; every flag must mean the same thing for each.
+
 ### 8. No backwards compatibility
 
 Hard cutovers only. Every retired surface fails loudly with a teaching
@@ -212,14 +245,22 @@ path.
 
 Kinematics is pure data and choreography is pure JS, fully independent
 (11). Clients render from file + sidecar + the store's artifact side and never
-read source, a record, or trigger source builds (12). An explicit editing
-session may consume runtime-announced preview trees as specified in STORE §9b.
+read source, a record, or trigger source builds (12). A build's status
+(STORE §9b) carries no geometry: clients render the saved file.
 Correctness never depends on a
 store hit (13). Composition: importing binds, calling links — a parent
-depends on a child by its RESULT (the pinned tree), on a constant by its
-VALUE, on a helper by its FILE — and a model must never `read_step` its own
-output (14). The bundled runtime under `_runtime/` is the JS half of these;
-the laws' JS statements live in that runtime. It is built
+depends on a child by its RESULT (the pinned tree) and on what importing it
+runs in the parent's process (its module body and model headers, never a
+model body), on a constant by its VALUE, on a helper by its REACH (the part of
+the helper the script and every file the build executed can run, closed
+statically; the whole file — or the whole closure — wherever the analysis
+cannot see), on a data file by its BYTES (every file the build opened,
+whoever opened it: STORE.md §5, every read is seen),
+and on every file whose appearance would change what an import finds
+([`STORE.md`](STORE.md) §3) — and a model must never `read_step` its own
+output (14). The bundled runtime
+under `_runtime/` is the JS half of these; the laws' JS statements live in that
+runtime. It is built
 when the wheel is packaged and travels only inside it: the source tree never
 carries a built copy, so an installed cadgen and the sources that produced it
 cannot disagree.
@@ -291,6 +332,47 @@ file it was asked for.
 materials, or animation; no
 `.step.json` may appear beside it.
 
+### 18. Caches sit around a model run, never inside it
+
+The gate decides whether a model runs at all (`STORE.md` §4), and the store
+derives everything render-side from the bytes the run wrote (law 2). Inside a
+run, every modeling operation executes: cadgen never replays a stored result,
+never substitutes a copy for what an operation returned, and never changes
+what build123d's `==` and `is_same` answer. A script therefore behaves the
+same inside cadgen as under plain Python. The hooks that remain change no
+result: `determinism.py` fixes the iteration order of build123d's
+de-duplications (an order-keeping set, and a `Vertex` hash by point that
+leaves equality alone), lazy children defer a child's geometry until it is
+read (`STORE.md` §9a), and the file trace only watches what the run opens
+(`STORE.md` §5). An expensive or independently edited part gets its
+speed by being its own model, never from a cache inside one. What an older
+cadgen cached inside a run (`index/op`, the operation cache) is never read,
+and is retired with every object only it named (`STORE.md` §8).
+*Pressure-test*: call a model's function under plain Python and inside a
+cadgen build; the geometry it returns, and the answer to every `==` and
+`is_same` along the way, are the same.
+
+### 19. Nothing waits on the network
+
+Once installed, cadgen works offline: every command, build, snapshot, server
+and page. Its own requests are two, both anonymous: analytics
+(`analytics.py`, sent only with the person's yes) and the daily version check
+(`updates.py`). Both run in the background and fail silently: no start,
+command, request or tool call waits on them, and one that fails changes
+nothing but what is counted or offered. Two waits remain, bounded, each for
+something only the network can do: a server's last analytics send as it exits
+(`analytics.CLOSE_SECONDS`), and `cadgen analytics off`, which waits for the
+deletion it asks for (still owed, and asked again, when nobody answers). The
+pages load nothing from the internet: everything they show ships in the wheel.
+Installing needs the network (cadgen itself, and the headless browser the first
+snapshot fetches), and nothing after it does. The law is the package's, not the
+launcher's: a launcher that checks a package index before it starts anything
+(`uvx`, once its cache is stale) has its own needs.
+*Pressure-test*: with an installed cadgen and every request refused (a proxy on
+a closed port), and again with every request hanging, start a server, open a
+view, call each tool, and run a build and a snapshot: each works, and nothing
+waits on a request beyond the two waits above.
+
 ## The shape of the package
 
 ```
@@ -304,12 +386,19 @@ src/cadgen/
                          #   writes no STEP
   kinematics.py          # typed mates vocabulary (revolute/slider/
                          #   cylindrical/fastened, couple, normalize)
-  step_scene.py          # read_step and scene loading (recorded inputs)
-  inputs.py              # declare_input: a data file the model reads and
-                         #   cadgen has no reader for (a JSON atlas, a CSV
-                         #   table) is a freshness input once it says so
+  step_scene.py          # read_step and read_scene
   assembly.py            # label utilities and softly deprecated AssemblyHelper
   results.py             # the typed Results every verb returns (stdlib-only)
+  settings.py            # the person's settings: settings.json in the state
+                         #   directory, a section per feature, shared by
+                         #   every app and version of cadgen
+  analytics.py           # the CAD apps' anonymous usage counts, with consent
+                         #   (its answer: settings.json's `analytics` section)
+  features.py            # the CAD views' features a person can turn off
+                         #   (Quick edit: settings.json's `features` section)
+  updates.py             # the daily version check: whether a newer release is
+                         #   out, for a copy nothing else keeps up to date
+                         #   (_internal/channel.py)
   store/                 # the store (STORE.md): objects, index, records, trees,
                          #   closure, gate, materialize, publish, lazy, gc, view
   cli/                   # generated command shells, one per <format> <verb>
@@ -319,25 +408,37 @@ src/cadgen/
                          #   spares, extras), jobs (the ledger), server,
                          #   worker, client, transport
   _internal/             # the engine: generation pipeline, tree builder,
+                         #   filetrace (every file a build opens),
                          #   FK (kinematics_fk/resolve), mesh_export ledger,
                          #   cli_from_function, doors (documents by bytes),
                          #   source_sidecar, step_assemble/step_reemit
   viewer/                # the CAD Viewer's server: launcher (main),
-                         #   routes (http_app), catalog (scanner), status
+                         #   routes (http_app), files by absolute path
+                         #   (backend), a file's catalog row (scanner; started
+                         #   when a watched build saves: warm), the explorer's
+                         #   reads (folders), the model library every CAD view
+                         #   shares (recents), status
                          #   (artifact_status: not compiled / compiling /
                          #   compiled / failed), build_progress (the daemon's
                          #   job ledger, read over its socket)
+  mcp/                   # CAD for agent hosts: stdio JSON-RPC (protocol), the
+                         #   tools and launches (server), open views (views),
+                         #   the viewer routes in-process (tunnel), roots,
+                         #   the page (ui), and the CAD Viewer link for
+                         #   a host that renders no MCP Apps (browser)
   _runtime/              # BUILT JS (browser snapshot renderer, node
-                         #   builders, the viewer client) — produced when the
-                         #   wheel is packaged, never committed, never edited
+                         #   builders, the viewer client, the MCP app page)
+                         #   and the native file tracer, one library per
+                         #   platform — produced when the wheel is packaged,
+                         #   never committed, never edited
 ```
 
 Verbs by format: `step` compile · build · snapshot;
 `stl`/`3mf`/`glb` build · snapshot; `dxf` snapshot; `urdf`/`sdf`
 validate · snapshot; `srdf` validate. `cadgen snapshot` routes any suffix.
-`cadgen store|daemon|doctor` are status commands, and `cadgen viewer
-[list|stop]` the CAD Viewer's launcher and instance manager — all deliberately
-outside the mirror pattern. `cadgen step compile` is internal tooling: skills never
+`cadgen store|daemon|doctor` are status commands, `cadgen viewer
+[stop]` the CAD Viewer's launcher, and `cadgen mcp`
+the server an agent host starts — all deliberately outside the mirror pattern. `cadgen step compile` is internal tooling: skills never
 teach it — doors compile a document's missing tree on demand.
 
 Developed in [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad);
@@ -348,3 +449,11 @@ The viewer exposes `POST /__cad/clipboard` for explicit viewport PNG copies. It
 uses the same host and custom-header POST gates as other mutation routes, limits
 images to 20 MiB, and delegates native delivery to `viewer/clipboard.py`. It never
 reads the clipboard. Unsupported desktop clipboard environments return an error.
+
+It exposes `POST /__cad/sketches?name=` for a picture a copied prompt names by path:
+the view with a person's sketch drawn over it. It takes a PNG of at most 20 MiB under
+the same gates and saves it in the system's temporary directory as
+`cadgen-sketches/<name-stem>-<sha256[:12]>.png` (the same picture saved twice is one
+file, and saving it again makes it the newest), keeps only the newest 64
+(`viewer/sketches.py`), and answers `{"ok": true, "path": "<absolute path>"}`. It is
+scratch, not state.
