@@ -7,8 +7,8 @@ cadgen runtime state (presence, per-skill pin, viewer/daemon) without the
 agent having to read a skill first.
 
 The plugin ships no tools of its own: the skills are instructions over the
-``cadgen`` distribution, which each skill's ``requirements.txt`` names and the
-agent installs on first use.
+``cadgen`` distribution, which each skill's SKILL.md runs through the one
+pinned launch command (``uvx ... --from cadgen==<version> cadgen``).
 
 This module must stay importable without QwenPaw installed (stdlib only at
 module scope; qwenpaw/agentscope imports sit inside functions): QwenPaw
@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -182,11 +183,32 @@ def _apply_fabrication_gate(workspace_dir: Path, skills_dir: Path) -> None:
                     entry["enabled"] = False
             return payload
 
-        mutate_json(
-            get_workspace_skill_manifest_path(workspace_dir),
-            default_workspace_manifest(),
-            _disable,
-        )
+        manifest_path = get_workspace_skill_manifest_path(workspace_dir)
+        mutate_json(manifest_path, default_workspace_manifest(), _disable)
+
+        # The marker is exactly-once only if the gate actually applied: the
+        # host catches an install failure and still runs this hook, and an
+        # entry missing here is one the install hook never wrote. Marking
+        # anyway would leave the fabrication skills enabled by the next
+        # startup's successful install, with the gate skipped forever. Stay
+        # pending until every gated entry exists and reads back disabled.
+        skills = json.loads(manifest_path.read_text(encoding="utf-8")).get("skills", {})
+        pending = [
+            name
+            for name in gated
+            if not (
+                isinstance(skills.get(name), dict)
+                and skills[name].get("enabled") is False
+            )
+        ]
+        if pending:
+            logger.warning(
+                "text-to-cad: fabrication gate still pending in %s: %s not "
+                "confirmed disabled — will retry on the next startup",
+                workspace_dir.name,
+                ", ".join(pending),
+            )
+            return
         marker.touch()
         logger.info(
             "text-to-cad: fabrication skills left disabled in %s: %s "
@@ -202,51 +224,88 @@ def _apply_fabrication_gate(workspace_dir: Path, skills_dir: Path) -> None:
         )
 
 
-def _run_cadgen_doctor(skill_dir: Path) -> tuple[str, str]:
-    """Run ``cadgen doctor <skill_dir>``; return (status, detail).
+def _skill_launch_pin(skill_md: Path) -> str | None:
+    """The cadgen version a skill's launch command pins in its SKILL.md, or None."""
+    match = re.search(
+        r"--from\s+cadgen==([0-9]+\.[0-9]+\.[0-9]+)",
+        skill_md.read_text(encoding="utf-8"),
+    )
+    return match.group(1) if match else None
 
-    status is one of "ok" (exit 0), "mismatch" (exit 3), "missing"
-    (no cadgen on PATH) or "error".
+
+def _launch_argv(pin: str, *argv: str) -> list[str]:
+    """The skills' one launch command for a cadgen verb, pinned.
+
+    Mirrors ``cadgen._internal.launch.LAUNCHER``; it cannot come from cadgen
+    itself, because checking whether cadgen runs is exactly what this is for.
     """
-    import shutil
+    return [
+        "uvx", "--no-config", "--managed-python", "--python", "3.13",
+        "--from", f"cadgen=={pin}", "cadgen", *argv,
+    ]
+
+
+def _run_cadgen_doctor(skill_dir: Path, pin: str) -> tuple[str, str]:
+    """Run ``cadgen doctor <skill_dir>`` through the pinned launch command.
+
+    Returns (status, detail): status is "ok" (exit 0), "mismatch" (exit 3) or
+    "error". On a failure the detail is doctor's stderr, which is where the
+    version mismatch, its repair instructions and kernel-load errors go;
+    stdout still reports the healthy half (``kernel OK``), so choosing it
+    first would hide the failure's explanation.
+    """
     import subprocess
 
-    exe = shutil.which("cadgen")
-    if exe is None:
-        return (
-            "missing",
-            "the cadgen distribution is not installed — "
-            "`python -m pip install -r <skill>/requirements.txt` (Python >= 3.11)",
-        )
     try:
         result = subprocess.run(
-            [exe, "doctor", str(skill_dir)],
+            _launch_argv(pin, "doctor", str(skill_dir)),
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=600,  # the first run may download the pinned runtime
         )
     except subprocess.TimeoutExpired:
-        return ("error", "cadgen doctor timed out after 120s")
+        return ("error", "cadgen doctor timed out after 600s")
     except OSError as exc:
         return ("error", f"cadgen doctor failed to run: {exc}")
 
-    tail = (result.stdout or result.stderr or "").strip().splitlines()
-    detail = tail[-1] if tail else ""
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
     if result.returncode == 0:
-        return ("ok", detail)
+        tail = stdout.splitlines()
+        return ("ok", tail[-1] if tail else "")
     if result.returncode == 3:
-        return ("mismatch", detail)
+        return ("mismatch", stderr or (stdout.splitlines()[-1] if stdout else ""))
+    detail = stderr or (stdout.splitlines()[-1] if stdout else "")
     return ("error", detail or f"cadgen doctor exited {result.returncode}")
+
+
+def _run_status(argv: list[str]) -> str:
+    """The first stdout line of a lifecycle query, or why it could not run."""
+    import subprocess
+
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"status unavailable ({exc})"
+    out = (result.stdout or "").strip()
+    return out.splitlines()[0] if out else "none"
 
 
 async def _cad_setup_handler(ctx, args: str):
     """/cad-setup — report the cadgen runtime state for this workspace.
 
-    Checks, in order: the cadgen binary, each cadgen-pinned skill's
-    requirements pin (via ``cadgen doctor``), and the viewer/daemon
-    lifecycle so stray background processes are visible. Returns a Msg;
-    never raises into the dispatcher.
+    Checks, in order: uv (which the skills' one launch command runs through),
+    each cadgen-pinned skill's launch-command pin (verified with
+    ``cadgen doctor``), and the viewer/daemon lifecycle so stray background
+    processes are visible. QwenPaw awaits this handler on its event loop, so
+    every subprocess runs on a worker thread: a doctor run can take minutes
+    while uv downloads the pinned runtime, and a blocking call would stall
+    the app's other requests for all of it. Returns a Msg; never raises into
+    the dispatcher.
     """
+    import asyncio
+    import shutil
+
     from agentscope.message import Msg, TextBlock
 
     workspace_dir = getattr(ctx, "workspace_dir", None)
@@ -265,63 +324,65 @@ async def _cad_setup_handler(ctx, args: str):
         source = f"{source} ({_SKILLS_STATE['path']})"
     lines.append(f"  skills source: {source}")
 
-    # 1. cadgen binary presence + version
-    import shutil
-
-    exe = shutil.which("cadgen")
-    if exe is None:
+    # 1. uv: the skills run cadgen as `uvx ... --from cadgen==<pin> cadgen`,
+    # so the runtime prerequisite is uv, not a cadgen on PATH.
+    uvx = shutil.which("uvx")
+    if uvx is None:
         lines.append(
-            "  cadgen: NOT INSTALLED — install any pinned skill's "
-            "requirements.txt to get it (Python >= 3.11)"
+            "  uv: NOT INSTALLED — the skills run cadgen through uv; "
+            "install it (https://docs.astral.sh/uv/)"
         )
-    else:
-        try:
-            import subprocess
 
-            version = subprocess.run(
-                [exe, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            ).stdout.strip()
-        except Exception as exc:  # noqa: BLE001
-            version = f"unreadable ({exc})"
-        lines.append(f"  cadgen: {version} ({exe})")
-
-    # 2. Per-skill pin check for every cadgen-pinned skill in the workspace
+    # 2. The launch-command pin of every cadgen-pinned skill in the workspace.
+    # The launch command resolves exactly the pinned installation, so one live
+    # doctor run covers every skill sharing a pin.
+    pinned: dict[str, str] = {}
     if skills_root is not None and skills_root.is_dir():
         for skill_dir in sorted(skills_root.iterdir()):
-            req = skill_dir / "requirements.txt"
-            if not (skill_dir / "SKILL.md").is_file() or not req.is_file():
+            skill_md = skill_dir / "SKILL.md"
+            if not skill_md.is_file():
                 continue
-            if not any(
-                line.strip().startswith("cadgen")
-                for line in req.read_text(encoding="utf-8").splitlines()
-                if line.strip() and not line.strip().startswith("#")
-            ):
-                continue
-            status, detail = _run_cadgen_doctor(skill_dir)
-            mark = {"ok": "OK", "mismatch": "MISMATCH", "missing": "MISSING", "error": "ERROR"}[status]
-            lines.append(f"  {skill_dir.name}: {mark} — {detail}")
-    else:
+            pin = _skill_launch_pin(skill_md)
+            if pin is not None:
+                pinned[skill_dir.name] = pin
+
+    if skills_root is None or not skills_root.is_dir():
         lines.append("  skills: no skills/ directory in this workspace")
+    elif not pinned:
+        lines.append("  skills: no cadgen-pinned skills in this workspace")
+    else:
+        first_by_pin: dict[str, str] = {}
+        for name, pin in pinned.items():
+            first_by_pin.setdefault(pin, name)
+        if len(first_by_pin) > 1:
+            lines.append(
+                "  pins: INCONSISTENT — skills pin different cadgen versions "
+                "(a partial update?); each pin is a separate installation"
+            )
+        for name, pin in pinned.items():
+            checked_with = first_by_pin[pin]
+            if checked_with != name:
+                lines.append(f"  {name}: cadgen=={pin} (checked with {checked_with})")
+                continue
+            if uvx is None:
+                lines.append(f"  {name}: cadgen=={pin} — UNCHECKED (uv not installed)")
+                continue
+            status, detail = await asyncio.to_thread(
+                _run_cadgen_doctor, skills_root / name, pin
+            )
+            mark = {"ok": "OK", "mismatch": "MISMATCH", "error": "ERROR"}[status]
+            lines.append(f"  {name}: {mark} — {detail.replace(chr(10), chr(10) + '      ')}")
 
-    # 3. Background lifecycle visibility (viewer instances, warm daemon)
-    if exe is not None:
-        import subprocess
-
-        for label, argv in (
-            ("viewer", [exe, "viewer", "list", "--json"]),
-            ("daemon", [exe, "daemon", "status"]),
+    # 3. Background lifecycle visibility (viewer instances, warm daemon),
+    # through the same pinned launch command.
+    if uvx is not None and pinned:
+        pin = next(iter(pinned.values()))
+        for label, verb in (
+            ("viewer", ("viewer", "list", "--json")),
+            ("daemon", ("daemon", "status")),
         ):
-            try:
-                result = subprocess.run(
-                    argv, capture_output=True, text=True, timeout=30
-                )
-                out = (result.stdout or "").strip()
-                lines.append(f"  {label}: {out.splitlines()[0] if out else 'none'}")
-            except Exception as exc:  # noqa: BLE001
-                lines.append(f"  {label}: status unavailable ({exc})")
+            out = await asyncio.to_thread(_run_status, _launch_argv(pin, *verb))
+            lines.append(f"  {label}: {out}")
 
     return Msg(
         name="system",

@@ -23,9 +23,10 @@ workspace.
 | `sendcutsend` | Checks DXF and STEP files before uploading a SendCutSend order.                              |
 
 Skills are enabled by default on all channels in every workspace. The plugin
-itself ships no tools: each skill's `requirements.txt` names the `cadgen`
-distribution it runs on, and the skill instructs the agent to install it on
-first use (`python -m pip install -r requirements.txt`).
+itself ships no tools: each skill runs the `cadgen` distribution through the
+one launch command its SKILL.md pins (`uvx --no-config --managed-python
+--python 3.13 --from cadgen==<version> cadgen`), so the runtime prerequisite
+is [uv](https://docs.astral.sh/uv/) and nothing is pip-installed by hand.
 
 ## Install
 
@@ -82,19 +83,22 @@ the table above as enabled.
   fails, so the `max` of 2.99.0 is load-bearing: it covers every 2.x release,
   and it has to be revisited before a QwenPaw 3 ships or this plugin stops
   loading in silence.
-- Per skill, at runtime: Python ≥ 3.11 and the `cadgen` distribution from
-  PyPI (the agent installs it from the skill's `requirements.txt`). `cad`
-  rendering additionally needs a Chromium browser
-  (`python -m playwright install chromium`).
+- Per skill, at runtime: [uv](https://docs.astral.sh/uv/), whose `uvx` runs the
+  pinned `cadgen` distribution from PyPI (the first run downloads it). `cad`
+  rendering additionally needs a Chromium browser, which the first snapshot
+  fetches (Playwright is a cadgen dependency).
 
 ## Preflight: /cad-setup
 
 Run `/cad-setup` in any workspace chat to check the runtime before first use:
 
-- whether the `cadgen` distribution is installed (and its version);
-- each cadgen-pinned skill's `requirements.txt` pin, verified with
-  `cadgen doctor` (exit 3 = mismatch, and the command prints the fix);
+- whether `uv` is installed (the skills run cadgen through `uvx`);
+- each cadgen-pinned skill's launch-command pin, verified with `cadgen doctor`
+  (exit 3 = mismatch, and the command prints the fix on stderr);
 - viewer instances and the warm daemon, so background processes are visible.
+
+The handler awaits its subprocesses on a worker thread, so a first run that
+downloads the pinned runtime does not stall the app's other requests.
 
 A one-line pointer to `/cad-setup` is injected into the system prompt, so the
 agent knows the check exists without reading a skill.

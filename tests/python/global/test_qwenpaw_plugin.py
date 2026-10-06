@@ -13,6 +13,12 @@ it. Nothing is duplicated in git for that purpose: the entry point resolves a
 `skills/` tree at runtime, and these tests pin the resolution order and, more
 importantly, that a configured path which fails to resolve is reported instead
 of being quietly served by a stale copy.
+
+The `/cad-setup` contract is pinned too, against the failure modes a review
+found: its subprocesses must not run on QwenPaw's event loop (the handler is
+awaited there), a doctor failure must surface stderr (where the mismatch and
+its repair instructions go), and the once-only fabrication gate must not mark
+a workspace provisioned until the gated entries read back disabled.
 """
 
 from __future__ import annotations
@@ -20,8 +26,10 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_DIR = REPO_ROOT / ".qwenpaw-plugin"
@@ -277,6 +285,264 @@ class QwenPawPluginManifestTest(unittest.TestCase):
                 )
             finally:
                 sys.modules.pop("_test_qwenpaw_plugin_orphan", None)
+
+
+def install_agentscope_stub() -> dict[str, types.ModuleType]:
+    """A minimal `agentscope.message`: Msg and TextBlock carry their kwargs."""
+    message = types.ModuleType("agentscope.message")
+
+    class Msg:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class TextBlock:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    message.Msg = Msg
+    message.TextBlock = TextBlock
+    return {
+        "agentscope": types.ModuleType("agentscope"),
+        "agentscope.message": message,
+    }
+
+
+def install_store_stub(manifest_path: Path) -> dict[str, types.ModuleType]:
+    """The qwenpaw skill_system.store surface the fabrication gate imports.
+
+    `mutate_json` behaves like the real one: read the manifest (or the default
+    when absent), apply the mutation, write it back.
+    """
+    store = types.ModuleType("qwenpaw.agents.skill_system.store")
+    store.default_workspace_manifest = lambda: {"skills": {}}
+    store.get_workspace_skill_manifest_path = lambda workspace_dir: manifest_path
+
+    def mutate_json(path, default, mutate):
+        payload = (
+            json.loads(path.read_text(encoding="utf-8")) if path.is_file() else default
+        )
+        path.write_text(json.dumps(mutate(payload)), encoding="utf-8")
+
+    store.mutate_json = mutate_json
+    modules = {
+        name: types.ModuleType(name)
+        for name in ("qwenpaw", "qwenpaw.agents", "qwenpaw.agents.skill_system")
+    }
+    modules["qwenpaw.agents.skill_system.store"] = store
+    return modules
+
+
+class CadSetupDoctorTest(unittest.TestCase):
+    """`cadgen doctor` writes its failures to stderr; /cad-setup must show them.
+
+    On a pin mismatch stdout still carries the healthy half (`kernel OK`), so
+    preferring stdout hides the mismatch and its repair instructions — the
+    report review reproduced.
+    """
+
+    def run_doctor(self, module, **kwargs):
+        import subprocess
+
+        completed = subprocess.CompletedProcess(args=[], **kwargs)
+        with mock.patch("subprocess.run", return_value=completed):
+            return module._run_cadgen_doctor(Path("skills/cad"), "0.7.15")
+
+    def test_mismatch_reports_stderr_with_the_repair_instructions(self) -> None:
+        module = load_entry(self)
+        status, detail = self.run_doctor(
+            module,
+            returncode=3,
+            stdout="cadgen 0.7.14\n  kernel   OK — OCP at /x\n",
+            stderr=(
+                "  pin      MISMATCH — skills/cad pins cadgen==0.7.15, "
+                "but cadgen 0.7.14 is installed.\n"
+                "This is not the installation the skill uses. Run cadgen "
+                "with its launch command:\n"
+                "  uvx --from cadgen==0.7.15 cadgen ...\n"
+            ),
+        )
+        self.assertEqual(status, "mismatch")
+        self.assertIn("MISMATCH", detail)
+        self.assertIn("launch command", detail)
+        self.assertNotIn("kernel   OK", detail)
+
+    def test_kernel_load_failure_reports_stderr(self) -> None:
+        module = load_entry(self)
+        status, detail = self.run_doctor(
+            module,
+            returncode=4,
+            stdout="cadgen 0.7.15\n  pin      OK — cadgen==0.7.15\n",
+            stderr="  kernel   FAILED — ImportError: DLL load failed while importing OCP\n",
+        )
+        self.assertEqual(status, "error")
+        self.assertIn("kernel   FAILED", detail)
+        self.assertIn("ImportError", detail)
+
+    def test_success_reports_the_stdout_tail(self) -> None:
+        module = load_entry(self)
+        status, detail = self.run_doctor(
+            module,
+            returncode=0,
+            stdout="cadgen 0.7.15\n  kernel   OK — OCP at /x\n  pin      OK — cadgen==0.7.15\n",
+            stderr="",
+        )
+        self.assertEqual(status, "ok")
+        self.assertIn("pin      OK", detail)
+
+
+class CadSetupHandlerTest(unittest.TestCase):
+    """QwenPaw awaits the handler on its event loop: no subprocess may run there.
+
+    A doctor run can take minutes while uv downloads the pinned runtime, so a
+    blocking call stalls every other request the app serves.
+    """
+
+    def test_subprocesses_run_off_the_event_loop_thread(self) -> None:
+        import asyncio
+        import subprocess
+        import threading
+
+        module = load_entry(self)
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            for name in ("cad", "dxf"):
+                skill = workspace / "skills" / name
+                skill.mkdir(parents=True)
+                (skill / "SKILL.md").write_text(
+                    "- `cadgen` below means `uvx --no-config --managed-python "
+                    "--python 3.13 --from cadgen==0.7.15 cadgen`\n",
+                    encoding="utf-8",
+                )
+
+            main_thread = threading.get_ident()
+            calls: list[tuple[int, list[str]]] = []
+
+            def fake_run(argv, **kwargs):
+                calls.append((threading.get_ident(), list(argv)))
+                return subprocess.CompletedProcess(
+                    args=argv, returncode=0, stdout="ok\n", stderr=""
+                )
+
+            ctx = types.SimpleNamespace(workspace_dir=str(workspace))
+            with (
+                mock.patch("shutil.which", return_value="/usr/bin/uvx"),
+                mock.patch("subprocess.run", side_effect=fake_run),
+                mock.patch.dict(sys.modules, install_agentscope_stub()),
+            ):
+                msg = asyncio.run(module._cad_setup_handler(ctx, ""))
+
+        self.assertTrue(calls, "expected doctor, viewer and daemon subprocesses")
+        offenders = [argv for tid, argv in calls if tid == main_thread]
+        self.assertEqual(
+            offenders,
+            [],
+            "a subprocess ran on the event loop thread",
+        )
+        text = msg.content[0].text
+        self.assertIn("cad: OK", text)
+        # One live check per distinct pin: dxf shares cad's.
+        self.assertIn("dxf: cadgen==0.7.15 (checked with cad)", text)
+        self.assertIn("viewer:", text)
+        self.assertIn("daemon:", text)
+
+    def test_uv_missing_marks_skills_unchecked_without_failing(self) -> None:
+        import asyncio
+
+        module = load_entry(self)
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            skill = workspace / "skills" / "cad"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(
+                "`uvx --no-config --managed-python --python 3.13 "
+                "--from cadgen==0.7.15 cadgen`\n",
+                encoding="utf-8",
+            )
+            ctx = types.SimpleNamespace(workspace_dir=str(workspace))
+            with (
+                mock.patch("shutil.which", return_value=None),
+                mock.patch.dict(sys.modules, install_agentscope_stub()),
+            ):
+                msg = asyncio.run(module._cad_setup_handler(ctx, ""))
+        text = msg.content[0].text
+        self.assertIn("uv: NOT INSTALLED", text)
+        self.assertIn("cad: cadgen==0.7.15 — UNCHECKED", text)
+
+
+class FabricationGateTest(unittest.TestCase):
+    """The once-only marker is written only once the gate has actually applied.
+
+    The host catches an install failure and still runs the gate hook, so an
+    entry missing from the manifest is one the install never wrote. Marking
+    anyway leaves the fabrication skills enabled by the next startup's
+    successful install with the gate skipped — the sequence review reproduced.
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="qwenpaw-gate-")
+        self.addCleanup(self.temporary.cleanup)
+        root = Path(self.temporary.name)
+        self.module = load_entry(self)
+        self.workspace = root / "workspace"
+        self.workspace.mkdir()
+        self.skills_dir = root / "skills"
+        for name in self.module.FABRICATION_SKILLS:
+            skill = self.skills_dir / name
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+        self.manifest_path = self.workspace / "skill_manifest.json"
+
+    def gate(self):
+        with mock.patch.dict(
+            sys.modules, install_store_stub(self.manifest_path)
+        ):
+            self.module._apply_fabrication_gate(self.workspace, self.skills_dir)
+
+    def write_manifest(self, skills: dict) -> None:
+        self.manifest_path.write_text(json.dumps({"skills": skills}), encoding="utf-8")
+
+    def read_manifest(self) -> dict:
+        return json.loads(self.manifest_path.read_text(encoding="utf-8"))["skills"]
+
+    def enabled_entries(self) -> dict:
+        return {
+            name: {"source": f"plugin:cad/{name}", "enabled": True}
+            for name in self.module.FABRICATION_SKILLS
+        }
+
+    def marker(self) -> Path:
+        return self.workspace / self.module._PROVISION_MARKER
+
+    def test_missing_entries_leave_the_gate_pending(self) -> None:
+        self.write_manifest({})
+        with self.assertLogs(self.module.logger, level="WARNING") as logs:
+            self.gate()
+        self.assertFalse(
+            self.marker().exists(),
+            "no gated entry was installed, so the workspace is not provisioned",
+        )
+        self.assertIn("still pending", " ".join(logs.output))
+
+    def test_failed_install_then_successful_retry_still_gates(self) -> None:
+        # First startup: the install hook failed, the manifest has no entries.
+        self.write_manifest({})
+        self.gate()
+        self.assertFalse(self.marker().exists())
+        # Second startup: the install succeeded. The gate must still apply.
+        self.write_manifest(self.enabled_entries())
+        self.gate()
+        self.assertTrue(self.marker().exists())
+        for name, entry in self.read_manifest().items():
+            self.assertFalse(entry["enabled"], f"{name} was left enabled")
+
+    def test_existing_marker_leaves_user_choices_alone(self) -> None:
+        self.marker().touch()
+        self.write_manifest(self.enabled_entries())
+        self.gate()
+        for name, entry in self.read_manifest().items():
+            self.assertTrue(
+                entry["enabled"], f"{name}: the user's own choice must win"
+            )
 
 
 if __name__ == "__main__":
