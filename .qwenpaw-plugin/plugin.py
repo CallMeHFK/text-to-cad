@@ -245,6 +245,22 @@ def _launch_argv(pin: str, *argv: str) -> list[str]:
     ]
 
 
+def _doctor_report(text: str) -> str:
+    """Doctor's own lines out of a stderr block uv may have preceded.
+
+    When the pinned runtime is not cached yet, uv writes its download and
+    install progress to the same pipe, ahead of doctor's report. The user
+    needs the report, which starts at a `pin` or `kernel` line. Text with no
+    such line comes back unchanged: an unexpected failure is shown whole
+    rather than trimmed away.
+    """
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if re.match(r"^\s*(?:pin|kernel)\s+\S", line):
+            return "\n".join(lines[index:])
+    return text
+
+
 def _run_cadgen_doctor(skill_dir: Path, pin: str) -> tuple[str, str]:
     """Run ``cadgen doctor <skill_dir>`` through the pinned launch command.
 
@@ -274,8 +290,8 @@ def _run_cadgen_doctor(skill_dir: Path, pin: str) -> tuple[str, str]:
         tail = stdout.splitlines()
         return ("ok", tail[-1] if tail else "")
     if result.returncode == 3:
-        return ("mismatch", stderr or (stdout.splitlines()[-1] if stdout else ""))
-    detail = stderr or (stdout.splitlines()[-1] if stdout else "")
+        return ("mismatch", _doctor_report(stderr) or (stdout.splitlines()[-1] if stdout else ""))
+    detail = _doctor_report(stderr) or (stdout.splitlines()[-1] if stdout else "")
     return ("error", detail or f"cadgen doctor exited {result.returncode}")
 
 
@@ -289,6 +305,21 @@ def _run_status(argv: list[str]) -> str:
         return f"status unavailable ({exc})"
     out = (result.stdout or "").strip()
     return out.splitlines()[0] if out else "none"
+
+
+def _report_detail(detail: str) -> str:
+    """Doctor's detail on one report line, its own indentation dropped.
+
+    Doctor indents its report lines (`  pin      OK — ...`); the skill line
+    already indents, so the two stack up as a gap. Continuation lines of a
+    multi-line failure block stay under the line they belong to.
+    """
+    lines = detail.splitlines()
+    if not lines:
+        return ""
+    return lines[0].strip() + "".join(
+        f"\n      {line.strip()}" for line in lines[1:] if line.strip()
+    )
 
 
 async def _cad_setup_handler(ctx, args: str):
@@ -371,7 +402,7 @@ async def _cad_setup_handler(ctx, args: str):
                 _run_cadgen_doctor, skills_root / name, pin
             )
             mark = {"ok": "OK", "mismatch": "MISMATCH", "error": "ERROR"}[status]
-            lines.append(f"  {name}: {mark} — {detail.replace(chr(10), chr(10) + '      ')}")
+            lines.append(f"  {name}: {mark} — {_report_detail(detail)}")
 
     # 3. Background lifecycle visibility (viewer instances, warm daemon),
     # through the same pinned launch command.

@@ -389,6 +389,52 @@ class CadSetupDoctorTest(unittest.TestCase):
         self.assertEqual(status, "ok")
         self.assertIn("pin      OK", detail)
 
+    def test_report_line_drops_doctor_s_own_indentation(self) -> None:
+        # Doctor indents its report lines; the skill line already indents, so
+        # a detail pasted as-is reads as a gap ("cad: OK —   pin   OK").
+        module = load_entry(self)
+        self.assertEqual(
+            module._report_detail(
+                "  pin      MISMATCH — skills/cad pins cadgen==0.7.15.\n"
+                "This is not the installation the skill uses.\n"
+            ),
+            "pin      MISMATCH — skills/cad pins cadgen==0.7.15.\n"
+            "      This is not the installation the skill uses.",
+        )
+
+    def test_uv_progress_written_before_the_report_is_dropped(self) -> None:
+        # Measured live: with the pinned runtime uncached, uv writes its
+        # download and install lines to the same stderr, ahead of doctor.
+        module = load_entry(self)
+        status, detail = self.run_doctor(
+            module,
+            returncode=3,
+            stdout="cadgen 0.7.14\n  kernel   OK — OCP at /x\n",
+            stderr=(
+                "Downloading cadgen (11.0MiB)\nDownloaded cadgen\n"
+                "Installed 59 packages in 68ms\n"
+                "  pin      MISMATCH — skills/cad/SKILL.md pins cadgen==0.7.15, "
+                "but cadgen 0.7.14 is installed.\n"
+            ),
+        )
+        self.assertEqual(status, "mismatch")
+        self.assertTrue(detail.lstrip().startswith("pin"), detail)
+        self.assertNotIn("Installed 59 packages", detail)
+
+    def test_a_failure_with_no_doctor_report_line_is_kept_whole(self) -> None:
+        # No `pin`/`kernel` anchor means the trimmer did not recognise the
+        # failure (uv itself refused to run cadgen): show it all, not nothing.
+        module = load_entry(self)
+        status, detail = self.run_doctor(
+            module,
+            returncode=1,
+            stdout="",
+            stderr="error: Failed to spawn: `cadgen`\n  Caused by: no such file\n",
+        )
+        self.assertEqual(status, "error")
+        self.assertIn("Failed to spawn", detail)
+        self.assertIn("no such file", detail)
+
 
 class CadSetupHandlerTest(unittest.TestCase):
     """QwenPaw awaits the handler on its event loop: no subprocess may run there.
