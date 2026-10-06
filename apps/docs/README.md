@@ -72,9 +72,9 @@ scripts/         # asset checks
 
 The header uses the blue CAD wordmark and favicons use C, both with soft relief shading. The homepage
 hero builds the TEXTTOCAD wordmark in with its animated SVG (sketch, extrude, cut, chamfer,
-render), and the repository README shows the same animated SVG. A phone's header always shows the
-CAD wordmark at its left; a desktop's slides it in before the section links once the homepage's
-TEXTTOCAD has scrolled out of sight (a page without one shows it throughout). `/icon` plays each
+render), and the repository README shows the same animated SVG. The header slides the CAD wordmark
+in at its left once the homepage's TEXTTOCAD has scrolled out of sight (a page without one shows it
+throughout), pushing right what follows it: a desktop's section links, a phone's burger. `/icon` plays each
 mark's build, with Replay, and provides downloadable C, CAD, TEXTTOCAD and stacked TEXT TO CAD
 SVGs, PNGs and animated SVGs, followed by the original animated loading-icon playground.
 `LogoBuild` (`src/components/logo-build.tsx`) shows a build: a plain `<img>`, since the animation
@@ -117,24 +117,28 @@ actions use muted shades of the logo's pastel blue through shadcn semantic
 tokens: #2c7197 in light mode and #30779d in dark mode, with #f5fbff labels.
 Text contrast is 5.14:1 and 4.73:1 respectively; the solid darker hover shades
 also exceed 4.5:1. Focus rings use a deeper brand blue on white and the logo's
-pale highlight on charcoal. Every Copy button is one size; the install message's
-uses the blue primary action style, the others are plain. Every section title
-shares one heading scale, and the header lists Overview, Install and Skills, the
-active link following the visible section. Overview opens with Available for
+pale highlight on charcoal. Every Copy is a plain icon button, one size with the buttons beside the install
+message that open it in an app, and each icon button has a tooltip. Install in Codex, the official listing, is
+the one blue button. Every button shows a pointer. Every section title
+shares one heading scale, and the header lists Overview, Install, Skills and
+Contributing, the active link following the visible section; a phone's header has
+a burger that drops them down. The header shows the version as its release tag
+names it (`v<VERSION>`), on a phone 360px or wider too. Overview opens with Available for
 these agents, first so a phone shows it on load: the agents' logos scrolling as
 skills.sh's do, skills.sh's logo set in `public/agents/` with Grok's glyph from
 Lobe Icons (MIT) in the same tile, each tile blended into the page's background.
 A logo leads to its install. Then the plugin's description, which every manifest
 and the README's Overview say word for word (`test_plugin_manifests.py` holds
 them to one text). Install
-leads with the message to send to an agent and a line on installing it yourself
-(uv, the app's commands, a restart), then a sub-section per agent app, its update
-and remove commands folded under Update or reinstall, Other Agents (the Skills
-CLI) for the rest, and Request Plugin, a new GitHub issue. Contributing closes the page. Install boxes and explanatory text fill the
+leads with the message to send to an agent, monospace like the commands, with buttons that open it
+in Claude Code (Claude Desktop), Codex or Cursor, prefilled and unsent, beside Copy; then a sub-section per agent app, its update
+and remove commands folded under Update or reinstall; Codex leads with a button to its listing in
+Codex's plugin directory, its commands, update and remove folded under Manual install. Other Agents
+(the Skills CLI) for the rest, and Request Plugin, a new GitHub issue. Contributing closes the page. Install boxes and explanatory text fill the
 content width. Command text remains monospace.
 
 The homepage and the repository README share their structure and are changed
-together: the plugin's description, the install message, installing it yourself,
+together: the plugin's description, the install message,
 each install's commands (to install, update and remove it), the skills and
 Contributing. Both speak to whoever installs text-to-cad, a person or their agent,
 and the README says more: numbered steps to install it yourself and fuller notes
