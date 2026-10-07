@@ -227,36 +227,54 @@ gemini extensions uninstall text-to-cad
 
 ### ZCode
 
+ZCode reads this repository's Claude plugin manifest and marketplace catalog,
+so it installs the same plugin — the skills and the CAD server:
+
 ```bash
-zcode plugin marketplace add earthtojake/text-to-cad
+zcode plugin marketplace add earthtojake/text-to-cad#latest
 zcode plugin install text-to-cad@earthtojake
 ```
 
-ZCode reads its own marketplace catalog (`.zcode-plugin/marketplace.json`) from
-this repository, the same shape as Claude Code's. Restart ZCode after
-installing. To update or reinstall, run the same commands again, then restart.
+To update, refresh the marketplace and the plugin, then restart ZCode:
+
+```bash
+zcode plugin marketplace update earthtojake
+zcode plugin update text-to-cad
+```
+
+To reinstall, remove it with these, then run the install commands again:
+
+```bash
+zcode plugin uninstall text-to-cad
+zcode plugin marketplace remove earthtojake
+```
 
 ### QwenPaw
 
-QwenPaw has no marketplace resolution over GitHub; its CLI installs a plugin
-from a local directory, so clone the repository first:
+QwenPaw plugins cannot register an MCP server, so the skills and the CAD
+server install separately. Install each skill into your agent's workspace:
 
 ```bash
-git clone https://github.com/earthtojake/text-to-cad
-qwenpaw plugin install text-to-cad/.qwenpaw-plugin
+for skill in cad dxf urdf srdf sdf step-parts engineering-drawing dfam-check dfm gcode bambu-labs sendcutsend; do
+  qwenpaw skills install https://github.com/earthtojake/text-to-cad/tree/latest/skills/$skill --agent-id <agent>
+done
 ```
 
-The plugin ships no copy of the skills — QwenPaw's loader copies only the
-plugin directory — so it resolves a `skills/` tree at runtime. Name the
-clone's in `~/.qwenpaw/config.json`
-(`{"plugins": {"cad": {"skills_dir": "~/text-to-cad/skills"}}}`; `~` expands),
-then restart QwenPaw. To update, pull the clone and restart.
+Then add the CAD server under **Agent → MCP**:
 
-The plugin enables every skill by default except the two that reach real
-machines — `bambu-labs` (starts prints on a LAN printer) and `sendcutsend`
-(uploads parts for manufacture) — which you enable per workspace when you opt
-in. Its `/cad-setup` command reports the runtime state and which skills tree
-it resolved.
+```json
+{
+  "command": "uvx",
+  "args": ["--no-config", "--managed-python", "--python", "3.13", "--from", "cadgen==0.7.15", "cadgen", "mcp"],
+  "env": {"CADGEN_INSTALL_CHANNEL": "qwenpaw-manual"}
+}
+```
+
+and set the server's access policy to allow its tools — QwenPaw refuses every
+call from a card until a policy allows it. To update, run the install loop
+again and raise the pinned `cadgen` version in the server config to the
+[latest release](https://pypi.org/project/cadgen/); to remove, delete the
+skills and the MCP entry.
 
 ### Other Agents
 

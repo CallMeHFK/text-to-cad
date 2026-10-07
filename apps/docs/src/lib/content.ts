@@ -83,24 +83,26 @@ export const installs = [
     update: "gemini extensions update text-to-cad",
     remove: "gemini extensions uninstall text-to-cad",
   },
-  // ZCode reads its own marketplace catalog (.zcode-plugin/marketplace.json) from the repository,
-  // the same shape as Claude Code's.
+  // ZCode reads the Claude plugin manifest and marketplace catalog (its loader checks a
+  // .zcode-plugin/ manifest first but falls back to .claude-plugin/), so it installs the
+  // same plugin -- skills and the CAD server.
   {
     id: "zcode",
     agent: "ZCode",
     command:
-      "zcode plugin marketplace add earthtojake/text-to-cad\nzcode plugin install text-to-cad@earthtojake",
+      "zcode plugin marketplace add earthtojake/text-to-cad#latest\nzcode plugin install text-to-cad@earthtojake",
+    update: "zcode plugin marketplace update earthtojake\nzcode plugin update text-to-cad",
+    remove: "zcode plugin uninstall text-to-cad\nzcode plugin marketplace remove earthtojake",
   },
-  // QwenPaw has no marketplace resolution over GitHub: its CLI installs a plugin from a local
-  // directory, so the repository is cloned first. The plugin ships no skills copy -- QwenPaw's
-  // loader copies only the plugin directory -- so it resolves a skills/ tree at runtime, and the
-  // config names the clone's.
+  // QwenPaw plugins cannot register an MCP server, so the skills install per skill from the
+  // latest branch, and the CAD server is a manual MCP entry (the README's QwenPaw section has
+  // the config and the access-policy step -- QwenPaw denies a server's calls without one).
   {
     id: "qwenpaw",
     agent: "QwenPaw",
-    note: "QwenPaw installs a plugin from a local directory, so the repository is cloned first; then name its skills tree in ~/.qwenpaw/config.json ({\"plugins\": {\"cad\": {\"skills_dir\": \"~/text-to-cad/skills\"}}}) and restart.",
+    note: "Installs the skills only; the CAD server is a manual MCP entry — see the README's QwenPaw section.",
     command:
-      "git clone https://github.com/earthtojake/text-to-cad\nqwenpaw plugin install text-to-cad/.qwenpaw-plugin",
+      "for skill in cad dxf urdf srdf sdf step-parts engineering-drawing dfam-check dfm gcode bambu-labs sendcutsend; do\n  qwenpaw skills install https://github.com/earthtojake/text-to-cad/tree/latest/skills/$skill --agent-id <agent>\ndone",
   },
   {
     id: "other-agents",
