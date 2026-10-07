@@ -15,11 +15,9 @@ export const jsonTargets = [
   { path: ".claude-plugin/plugin.json", fields: [["version"]] },
   { path: ".codex-plugin/plugin.json", fields: [["version"]] },
   { path: ".cursor-plugin/plugin.json", fields: [["version"]] },
-  { path: ".qwenpaw-plugin/plugin.json", fields: [["version"]] },
-  { path: ".zcode-plugin/plugin.json", fields: [["version"]] },
   { path: "gemini-extension.json", fields: [["version"]] },
+  { path: "plugin.json", fields: [["version"]] },
   { path: ".claude-plugin/marketplace.json", fields: [["version"]], pluginEntries: ["text-to-cad"] },
-  { path: ".zcode-plugin/marketplace.json", fields: [["version"]], pluginEntries: ["text-to-cad"] },
 ];
 
 const tomlTargets = [
@@ -49,6 +47,7 @@ export const pinTargets = [
   "codex.mcp.json",
   "claude.mcp.json",
   "cursor.mcp.json",
+  "mcp.json",
   "gemini-extension.json",
   "README.md",
   ...skillLaunchTargets(),

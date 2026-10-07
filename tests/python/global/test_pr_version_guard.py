@@ -14,9 +14,7 @@ from pathlib import Path
 
 from tests.python.support.paths import repo_path
 
-# The guard exempts any repository but upstream's (a fork's VERSION moves by
-# syncing upstream), so the enforcement tests run as the upstream repository.
-REPOSITORY = "earthtojake/text-to-cad"
+REPOSITORY = "owner/repo"
 
 
 class PrVersionGuardTests(unittest.TestCase):
@@ -54,14 +52,14 @@ class PrVersionGuardTests(unittest.TestCase):
         self.commit(f"Release {version}")
         self.git("tag", f"v{version}")
 
-    def check(self, head_repo: str = REPOSITORY, repository: str = REPOSITORY) -> subprocess.CompletedProcess[str]:
+    def check(self, head_repo: str = REPOSITORY) -> subprocess.CompletedProcess[str]:
         """The guard on the merge commit GitHub would test: main with the branch merged in."""
         self.git("switch", "--detach", "main")
         self.git("merge", "--no-ff", "--no-edit", "feature")
         return subprocess.run(
             ["bash", str(repo_path("scripts/release/check-pr-version.sh")), head_repo],
             cwd=self.root, text=True, capture_output=True, check=False,
-            env={**os.environ, "GITHUB_REPOSITORY": repository},
+            env={**os.environ, "GITHUB_REPOSITORY": REPOSITORY},
         )
 
     def bump_feature(self, version: str) -> None:
@@ -94,15 +92,6 @@ class PrVersionGuardTests(unittest.TestCase):
         result = self.check(head_repo="someone/fork")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("fork", result.stderr)
-
-    def test_a_fork_repository_is_not_release_gated(self) -> None:
-        # A fork never dispatches Prepare Release: its VERSION moves by syncing
-        # upstream, and the sync pull requests carry the bumps those commits
-        # contain, so the guard does not run its upstream-tag rule there.
-        self.bump_feature("0.5.1")
-        result = self.check(repository="someone/fork")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("does not run releases", result.stdout)
 
     def test_a_version_behind_the_target_branch_is_refused(self) -> None:
         self.bump_feature("0.4.9")

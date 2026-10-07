@@ -85,13 +85,10 @@ path, the rehearsal, and local/manual fallbacks.
 ## Repo Map
 
 - `skills/`: agent skills and their references/scripts.
-- `.claude-plugin/`, `.codex-plugin/`, `.cursor-plugin/`, `.qwenpaw-plugin/`,
-  `.zcode-plugin/`, `gemini-extension.json`:
+- `.claude-plugin/`, `.codex-plugin/`, `.cursor-plugin/`, `gemini-extension.json`, and the
+  [Agent Plugins](https://agent-plugins.org) standard's `plugin.json` and `mcp.json`:
   agent plugin manifests. The repository root is the plugin package; its skills are
-  `skills/` directly. The QwenPaw loader copies only the one plugin directory, so
-  rather than commit a second `skills/` tree its entry point resolves one at
-  runtime — plugin config first, then a gitignored generated copy, then the
-  checkout sibling. Installers take it from the `latest` branch, which
+  `skills/` directly. Installers take it from the `latest` branch, which
   `scripts/release/plugin_branch.py` builds from this tree at each release.
 - `models/`: sample and durable CAD/robot-description fixtures.
 - `apps/web/`: the CAD Viewer's React client (its backend is `cadgen.viewer`).

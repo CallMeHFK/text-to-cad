@@ -22,15 +22,6 @@ source "$SCRIPT_DIR/release-tags.sh"
 head_repo="${1:?Usage: check-pr-version.sh HEAD_REPO}"
 repository="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name this repository}"
 
-# Only the upstream repository runs releases. A fork never dispatches Prepare
-# Release -- its VERSION moves by syncing upstream, and the sync pull requests
-# carry the release bumps those commits contain -- so the rule below, which
-# reads upstream's release tags, would refuse its ordinary syncs.
-if [ "$repository" != "earthtojake/text-to-cad" ]; then
-  echo "Repository $repository does not run releases; VERSION changes arrive via upstream syncs."
-  exit 0
-fi
-
 git rev-parse --verify --quiet "HEAD^2" >/dev/null || {
   echo "HEAD is not a merge commit; run this on the pull request's merge commit." >&2
   exit 2

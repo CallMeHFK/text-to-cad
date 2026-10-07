@@ -1,13 +1,9 @@
 """Policy checks for the repo-root agent plugin package.
 
-The repository root *is* the plugin: `.claude-plugin/plugin.json`,
-`.codex-plugin/plugin.json`, `.cursor-plugin/plugin.json` and
-`.zcode-plugin/plugin.json` sit beside `.claude-plugin/marketplace.json` and
-`.zcode-plugin/marketplace.json`, and the plugin's skills are the canonical
-`skills/` directory rather than a generated copy. (`.qwenpaw-plugin/` is the
-one exception: QwenPaw's loader copies only the plugin directory, so its entry
-point resolves a `skills/` tree at runtime — `test_qwenpaw_plugin.py` holds
-that contract.) Publish Release builds the `latest` branch, the plugin alone, from
+The repository root *is* the plugin: `.claude-plugin/plugin.json` and
+`.codex-plugin/plugin.json` sit beside `.claude-plugin/marketplace.json`, and
+the plugin's skills are the canonical `skills/` directory rather than a
+generated copy. Publish Release builds the `latest` branch, the plugin alone, from
 this tree (scripts/release/plugin_branch.py). These checks replace the manifest validation that used to live
 in `scripts/bundle/bundle-plugin.sh` back when the plugin was a subdirectory
 package with its own duplicated `skills/` tree.
@@ -33,15 +29,12 @@ CLAUDE_PLUGIN_PATH = REPO_ROOT / ".claude-plugin" / "plugin.json"
 CODEX_MCP_PATH = REPO_ROOT / "codex.mcp.json"
 CLAUDE_MCP_PATH = REPO_ROOT / "claude.mcp.json"
 CURSOR_MCP_PATH = REPO_ROOT / "cursor.mcp.json"
+MCP_PATH = REPO_ROOT / "mcp.json"
 CODEX_PLUGIN_PATH = REPO_ROOT / ".codex-plugin" / "plugin.json"
 CURSOR_PLUGIN_PATH = REPO_ROOT / ".cursor-plugin" / "plugin.json"
-ZCODE_PLUGIN_PATH = REPO_ROOT / ".zcode-plugin" / "plugin.json"
-QWENPAW_PLUGIN_PATH = REPO_ROOT / ".qwenpaw-plugin" / "plugin.json"
+PLUGIN_PATH = REPO_ROOT / "plugin.json"
 GEMINI_EXTENSION_PATH = REPO_ROOT / "gemini-extension.json"
-MARKETPLACE_PATHS = (
-    REPO_ROOT / ".claude-plugin" / "marketplace.json",
-    REPO_ROOT / ".zcode-plugin" / "marketplace.json",
-)
+MARKETPLACE_PATH = REPO_ROOT / ".claude-plugin" / "marketplace.json"
 SKILLS_ROOT = REPO_ROOT / "skills"
 
 # A plugin manifest may point at its skills directory in any of these forms.
@@ -59,18 +52,14 @@ def load_json(path: Path) -> dict:
 
 class PluginManifestPolicyTest(unittest.TestCase):
     def test_every_provider_plugin_manifest_exists_at_the_repo_root(self) -> None:
-        for path in (CLAUDE_PLUGIN_PATH, CODEX_PLUGIN_PATH, CURSOR_PLUGIN_PATH, ZCODE_PLUGIN_PATH,
-                     QWENPAW_PLUGIN_PATH):
+        for path in (CLAUDE_PLUGIN_PATH, CODEX_PLUGIN_PATH, CURSOR_PLUGIN_PATH, PLUGIN_PATH):
             self.assertTrue(
                 path.is_file(),
                 f"missing plugin manifest: {path.relative_to(REPO_ROOT)}",
             )
 
     def test_plugin_manifests_name_the_plugin_consistently(self) -> None:
-        # QwenPaw's manifest carries its registry id separately; its display
-        # name is the plugin's.
-        for path in (CLAUDE_PLUGIN_PATH, CODEX_PLUGIN_PATH, CURSOR_PLUGIN_PATH, ZCODE_PLUGIN_PATH,
-                     QWENPAW_PLUGIN_PATH):
+        for path in (CLAUDE_PLUGIN_PATH, CODEX_PLUGIN_PATH, CURSOR_PLUGIN_PATH, PLUGIN_PATH):
             manifest = load_json(path)
             self.assertEqual(
                 manifest.get("name"),
@@ -82,20 +71,16 @@ class PluginManifestPolicyTest(unittest.TestCase):
         # Each host lists the plugin by its manifest's description, and the README's intro and the
         # docs site's Overview say it too; they are one text, so an edit to one must reach them all.
         codex = load_json(CODEX_PLUGIN_PATH)
+        marketplace = load_json(MARKETPLACE_PATH)
         descriptions = {
             "claude": load_json(CLAUDE_PLUGIN_PATH).get("description"),
             "codex": codex.get("description"),
             "codex interface": codex["interface"].get("longDescription"),
             "cursor": load_json(CURSOR_PLUGIN_PATH).get("description"),
-            "zcode": load_json(ZCODE_PLUGIN_PATH).get("description"),
-            "qwenpaw": load_json(QWENPAW_PLUGIN_PATH).get("description"),
+            "agent plugins": load_json(PLUGIN_PATH).get("description"),
             "gemini": load_json(GEMINI_EXTENSION_PATH).get("description"),
+            "marketplace": next(e for e in marketplace["plugins"] if e.get("name") == PLUGIN_NAME).get("description"),
         }
-        for marketplace_path in MARKETPLACE_PATHS:
-            marketplace = load_json(marketplace_path)
-            descriptions[f"{marketplace_path.parent.name} marketplace"] = next(
-                e for e in marketplace["plugins"] if e.get("name") == PLUGIN_NAME
-            ).get("description")
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
         descriptions["readme intro"] = " ".join(readme.split("\n# text-to-cad\n\n", 1)[1].split("\n\n", 1)[0].split())
         page = (REPO_ROOT / "apps" / "docs" / "src" / "lib" / "content.ts").read_text(encoding="utf-8")
@@ -141,25 +126,24 @@ class PluginManifestPolicyTest(unittest.TestCase):
         for key in ("documentationUrl", "repository", "author", "license"):
             with self.subTest(key):
                 self.assertEqual(cursor.get(key), claude.get(key))
+        standard = load_json(PLUGIN_PATH)
+        for key in ("homepage", "repository", "author", "license"):
+            with self.subTest(f"agent plugins {key}"):
+                self.assertEqual(standard.get(key), claude.get(key))
 
     def test_plugin_short_descriptions_match(self) -> None:
         # The one-line tagline a host shows beside the name: Codex's shortDescription and the
-        # marketplaces' description. Cursor's manifest has no such field.
+        # Claude marketplace's description. Cursor's manifest has no such field.
+        marketplace = load_json(MARKETPLACE_PATH)
         shorts = {
             "codex": load_json(CODEX_PLUGIN_PATH)["interface"].get("shortDescription"),
+            "marketplace": marketplace.get("description"),
+            "marketplace metadata": marketplace.get("metadata", {}).get("description"),
         }
-        for marketplace_path in MARKETPLACE_PATHS:
-            marketplace = load_json(marketplace_path)
-            shorts[f"{marketplace_path.parent.name} marketplace"] = marketplace.get("description")
-            shorts[f"{marketplace_path.parent.name} marketplace metadata"] = marketplace.get(
-                "metadata", {}
-            ).get("description")
         self.assertEqual(set(shorts.values()), {"Design 3D models"}, shorts)
 
     def test_plugin_manifests_point_at_the_canonical_skills_directory(self) -> None:
-        # QwenPaw's manifest has no skills field: its loader copies only the
-        # plugin directory, so the entry point resolves a tree at runtime.
-        for path in (CLAUDE_PLUGIN_PATH, CODEX_PLUGIN_PATH, CURSOR_PLUGIN_PATH, ZCODE_PLUGIN_PATH):
+        for path in (CLAUDE_PLUGIN_PATH, CODEX_PLUGIN_PATH, CURSOR_PLUGIN_PATH):
             manifest = load_json(path)
             self.assertIn(
                 manifest.get("skills"),
@@ -191,28 +175,27 @@ class PluginManifestPolicyTest(unittest.TestCase):
         self.assertLess(len(data), 2 * 1024 * 1024, "the Claude icon is 2 MB or more")
 
     def test_marketplace_lists_the_plugin_at_the_repository_root(self) -> None:
-        for marketplace_path in MARKETPLACE_PATHS:
-            marketplace = load_json(marketplace_path)
-            self.assertEqual(marketplace.get("name"), MARKETPLACE_NAME)
+        marketplace = load_json(MARKETPLACE_PATH)
+        self.assertEqual(marketplace.get("name"), MARKETPLACE_NAME)
 
-            plugins = marketplace.get("plugins")
-            self.assertIsInstance(plugins, list, "marketplace plugins must be an array")
+        plugins = marketplace.get("plugins")
+        self.assertIsInstance(plugins, list, "marketplace plugins must be an array")
 
-            entries = [
-                entry
-                for entry in plugins
-                if isinstance(entry, dict) and entry.get("name") == PLUGIN_NAME
-            ]
-            self.assertEqual(
-                len(entries),
-                1,
-                f"{marketplace_path.parent.name} marketplace must contain exactly one {PLUGIN_NAME!r} entry",
-            )
-            self.assertIn(
-                entries[0].get("source"),
-                VALID_ROOT_SOURCES,
-                "marketplace entry must source the plugin from the repository root",
-            )
+        entries = [
+            entry
+            for entry in plugins
+            if isinstance(entry, dict) and entry.get("name") == PLUGIN_NAME
+        ]
+        self.assertEqual(
+            len(entries),
+            1,
+            f"marketplace must contain exactly one {PLUGIN_NAME!r} entry",
+        )
+        self.assertIn(
+            entries[0].get("source"),
+            VALID_ROOT_SOURCES,
+            "marketplace entry must source the plugin from the repository root",
+        )
 
     def test_main_installs_as_itself(self) -> None:
         # Installs always work from main (AGENTS.md): a command that names no branch installs main as
@@ -226,14 +209,12 @@ class PluginManifestPolicyTest(unittest.TestCase):
                 for item in value:
                     yield from keys(item)
 
-        for path in (*MARKETPLACE_PATHS, CLAUDE_PLUGIN_PATH, CODEX_PLUGIN_PATH, CURSOR_PLUGIN_PATH,
-                     ZCODE_PLUGIN_PATH, QWENPAW_PLUGIN_PATH, GEMINI_EXTENSION_PATH,
-                     CLAUDE_MCP_PATH, CODEX_MCP_PATH, CURSOR_MCP_PATH):
+        for path in (MARKETPLACE_PATH, CLAUDE_PLUGIN_PATH, CODEX_PLUGIN_PATH, CURSOR_PLUGIN_PATH, GEMINI_EXTENSION_PATH,
+                     PLUGIN_PATH, CLAUDE_MCP_PATH, CODEX_MCP_PATH, CURSOR_MCP_PATH, MCP_PATH):
             with self.subTest(path=path.name):
                 self.assertFalse({"ref", "sha"} & set(keys(load_json(path))), f"{path.name} names a git ref")
-        for marketplace_path in MARKETPLACE_PATHS:
-            for entry in load_json(marketplace_path)["plugins"]:
-                self.assertIn(entry.get("source"), VALID_ROOT_SOURCES)
+        for entry in load_json(MARKETPLACE_PATH)["plugins"]:
+            self.assertIn(entry.get("source"), VALID_ROOT_SOURCES)
 
     def test_the_documented_commands_install_latest(self) -> None:
         # The preferred install is `latest`, the plugin alone, written once a release is on PyPI: every
@@ -302,6 +283,26 @@ class PluginManifestPolicyTest(unittest.TestCase):
         self.assertFalse(logo.startswith(("/", "..")) or "://" in logo, logo)
         self.assertEqual(logo, ".claude-plugin/icon.png")
 
+    def test_the_agent_plugins_manifest_starts_claudes_server(self) -> None:
+        # plugin.json and mcp.json are the Agent Plugins standard's (agent-plugins.org), whose schemas are
+        # closed: the manifest takes only these fields, and mcp.json names each server's transport. VS Code
+        # reads them before Claude's manifest. Cursor reads .cursor-plugin/plugin.json first, and merges a root
+        # mcp.json into the config that manifest names, keeping the manifest's server of the same name: both
+        # name it `cad`, so Cursor starts one. The server's channel is the standard's, not an app's.
+        manifest = load_json(PLUGIN_PATH)
+        self.assertEqual(manifest["$schema"], "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json")
+        self.assertLessEqual(set(manifest), {"$schema", "name", "version", "description", "author", "homepage",
+                                             "repository", "license", "keywords", "extensions"})
+        self.assertLessEqual(set(manifest["author"]), {"name", "email", "url"})
+        self.assertEqual(manifest["keywords"], load_json(CURSOR_PLUGIN_PATH)["keywords"])
+        config = load_json(MCP_PATH)
+        self.assertEqual(config, {"$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+                                  "mcpServers": config["mcpServers"]})
+        self.assertEqual(list(config["mcpServers"]), list(load_json(CURSOR_MCP_PATH)["mcpServers"]))
+        server, claude = config["mcpServers"]["cad"], load_json(CLAUDE_MCP_PATH)["mcpServers"]["cad"]
+        self.assertEqual({**server, "env": None}, {**claude, "type": "stdio", "env": None})
+        self.assertEqual(load_json(CURSOR_PLUGIN_PATH).get("mcpServers"), "./cursor.mcp.json")
+
     def test_gemini_extension_names_the_plugin_and_starts_claudes_server(self) -> None:
         # Gemini CLI reads gemini-extension.json at the root (and its skills/), and runs servers
         # from the manifest itself: Claude's server, pinned to this release, under the same name,
@@ -326,7 +327,7 @@ class PluginManifestPolicyTest(unittest.TestCase):
 
         version = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
         expected = [*LAUNCHER[1:], f"cadgen=={version}", "cadgen", "mcp"]
-        for path in (CLAUDE_MCP_PATH, CODEX_MCP_PATH, CURSOR_MCP_PATH, GEMINI_EXTENSION_PATH):
+        for path in (CLAUDE_MCP_PATH, CODEX_MCP_PATH, CURSOR_MCP_PATH, MCP_PATH, GEMINI_EXTENSION_PATH):
             with self.subTest(path=path.name):
                 server = load_json(path)["mcpServers"]["cad"]
                 self.assertEqual((server["command"], server["args"]), (LAUNCHER[0], expected))
@@ -346,13 +347,14 @@ class PluginManifestPolicyTest(unittest.TestCase):
         from cadgen._internal.channel import is_channel
 
         said = {path.name: load_json(path)["mcpServers"]["cad"]["env"]
-                for path in (CLAUDE_MCP_PATH, CODEX_MCP_PATH, CURSOR_MCP_PATH, GEMINI_EXTENSION_PATH)}
+                for path in (CLAUDE_MCP_PATH, CODEX_MCP_PATH, CURSOR_MCP_PATH, MCP_PATH, GEMINI_EXTENSION_PATH)}
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
         said["README.md"] = json.loads(re.search(r'"env": (\{"CADGEN_INSTALL_CHANNEL"[^}]*\})', readme).group(1))
         self.assertEqual(said, {
             "claude.mcp.json": {"CADGEN_INSTALL_CHANNEL": "claude-github"},
             "codex.mcp.json": {"CADGEN_INSTALL_CHANNEL": "codex-github"},
             "cursor.mcp.json": {"CADGEN_INSTALL_CHANNEL": "cursor-marketplace", "CADGEN_AUTO_UPDATED": "1"},
+            "mcp.json": {"CADGEN_INSTALL_CHANNEL": "agent-plugins"},
             "gemini-extension.json": {"CADGEN_INSTALL_CHANNEL": "gemini-github", "CADGEN_AUTO_UPDATED": "1"},
             "README.md": {"CADGEN_INSTALL_CHANNEL": "claude-desktop"},
         })
