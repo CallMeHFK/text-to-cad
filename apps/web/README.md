@@ -297,19 +297,21 @@ once it has settled — the model framed whole from the default direction, whate
 camera (`{action: "thumbnail"}`). `cadgen.viewer.recents` keeps the library in the
 user's state directory, shared with the CAD app.
 
-### Anonymous usage analytics
+### Usage stats (telemetry)
 
-CAD's anonymous usage analytics (`cadgen/analytics.py`) are off until the person allows
-them, and the Viewer asks as the CAD app does: once a model is on screen, with the shared card
-(`@text-to-cad/ui/consent`, handed to `CadViewer` as `notice`) at the viewport's top-right and
-Quick Edit stacked under it, then **Share anonymous usage data** in the app menu. The
-answer is kept in the user's state directory, so
-one answer counts for both apps. A "No thanks" or a closed card is never asked again, and
-where no answer could be kept the card never shows. The page reads and answers it through
-the CAD client (`consent`, `/__cad/analytics`), and reports a person touching the page (at
-most every 2 s) to `/__cad/analytics/activity`; a file shown is counted as it joins the
-library (`/__cad/recents`). The server holds those as counts and a code per file, in
-memory, and sends nothing without consent.
+cadgen's usage stats (`cadgen/analytics.py`) are on by default once a `cadgen` command has said
+so, once, in its output; nothing in the Viewer asks. **Share usage stats** in the app menu turns
+them off or on, and the answer is kept in the user's state directory, so one answer counts for
+both apps. The page reads and answers it through the CAD client (`consent`, `/__cad/analytics`),
+and reports a person touching the page (at most every 2 s) to `/__cad/analytics/activity`; a
+file shown is counted as it joins the library (`/__cad/recents`). A Quick Edit copied is counted
+through the host's `usage`, and the page's own crashes -- an error nothing caught, or one a view's
+boundary caught (`main.tsx`) -- are reported as core's `crashOf` makes them: the error's type and its
+script frames, never its message, each once a page. The build gives every chunk a hidden source map and
+a debug id its text and that map decide (`vite.config.mjs`, `@text-to-cad/core/chunk-ids`); the wheel
+leaves the maps out and a release uploads them to PostHog, and the page
+carries each chunk's id by file name (`__cadChunkIds`), and a frame names its chunk by it. The server holds all of it as counts in memory
+-- a file once a day, by its format, never its name -- and sends them every few minutes.
 
 The app menu's **Quick edit** (on until the person turns it off) is read and changed
 the same way: the client's `features`, through `/__cad/features` (`cadgen/features.py`).
@@ -348,7 +350,7 @@ The Viewer has the one navbar every app shares (see
 left the C logo, which opens the app menu, then the open file's name, which opens the
 explorer, with its ⋯; at the right only the blue update button, while a newer text-to-cad
 is out. The app menu holds Back to files (the home), the person's settings (Share
-anonymous usage data, Quick edit), Send feedback (a new issue titled "Feedback: "),
+usage stats, Quick edit), Send feedback (a new issue titled "Feedback: "),
 GitHub, Discord and, in gray, the version (a link to its release notes) and "Made by @…"
 (X), as in the CAD app; the home shows GitHub, Discord and X under its wordmark instead.
 Display and Preview are the view's, last at the navbar's right. This host

@@ -545,6 +545,8 @@ def launch_detached(argv: list[str], *, as_json: bool, prog: str = DEFAULT_PROG)
     is the child's own announcement, which it writes only once it is bound and
     attached, so the URL printed here answers its first request.
     """
+    from cadgen.analytics import for_others
+
     child_argv = [item for item in argv if item != "--detach"]
     if "--json" not in child_argv:
         child_argv.append("--json")
@@ -562,6 +564,8 @@ def launch_detached(argv: list[str], *, as_json: bool, prog: str = DEFAULT_PROG)
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 close_fds=True,
+                # It outlives this command, so it goes by the person's telemetry settings, not this shell's.
+                env=for_others(os.environ),
                 **popen_options,
             )
     except OSError as error:
@@ -684,12 +688,13 @@ def serve(argv: list[str], *, prog: str = DEFAULT_PROG) -> int:
     server.app = app
     server.RequestHandlerClass = make_handler_class(app)
 
-    # Anonymous usage analytics, sent only with consent (``cadgen/analytics.py``): this process's
-    # recorder, which the page asks about and reports to (``/__cad/analytics``). It never raises,
-    # and no request waits on it.
-    from cadgen.analytics import Recorder  # noqa: PLC0415
+    # Telemetry's usage counts, sent by default once a ``cadgen`` command has said so and never after a no
+    # (``cadgen/analytics.py``): this process's recorder, which the page asks about and reports to
+    # (``/__cad/analytics``). It never raises, and no request waits on it.
+    from cadgen.analytics import Recorder, collect_crashes  # noqa: PLC0415
 
-    analytics = Recorder()
+    analytics = Recorder(process="viewer")
+    collect_crashes(analytics.crashed)  # what fails in this process, wherever it is caught, is this recorder's
     analytics.started(client={"name": "cadgen-viewer", "version": app.viewer_version}, presentation="browser")
     analytics.start()
     app.analytics = analytics
