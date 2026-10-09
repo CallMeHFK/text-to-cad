@@ -4,7 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 import struct
-from typing import Any
+from functools import lru_cache
+from typing import Any, Callable
 
 from cadgen.store.index import read_entry, write_entry
 from cadgen.store.objects import put_object, read_verified_object
@@ -63,9 +64,32 @@ def producer_fields(value: dict) -> dict:
     return {key: item for key, item in value.items() if key != "producerKey"}
 
 
+@lru_cache(maxsize=1)
+def kernel_versions() -> tuple[str, str, str]:
+    """The loaded build123d, OCP and cadquery-ocp-novtk versions: who produced
+    a derived fact (an extracted surface, a measured box).
+
+    OCP.__version__ is exported by the native extension, not inferred from
+    build123d. An unknown version is a ValueError: a derived fact must never
+    share an identity with an unrelated kernel build.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    import OCP
+    import build123d
+
+    try:
+        distribution = version("cadquery-ocp-novtk")
+    except PackageNotFoundError as error:
+        raise ValueError("a derived fact needs the cadquery-ocp-novtk distribution") from error
+    versions = (getattr(build123d, "__version__", None), getattr(OCP, "__version__", None), distribution)
+    if any(not isinstance(value, str) or not value.strip() or "unknown" in value.lower() for value in versions):
+        raise ValueError("a derived fact needs known build123d and OCP versions")
+    return versions
+
+
 def producer_identity() -> dict:
-    from cadgen._internal.op_memo import _runtime_versions
-    build123d, ocp, distribution = _runtime_versions()
+    build123d, ocp, distribution = kernel_versions()
     identity = {"scheme": EXTRACTION_SCHEME, "surfFormat": SURF_FORMAT,
                 "build123d": build123d, "ocp": ocp, "cadqueryOcp": distribution}
     validate_producer(identity)
@@ -156,7 +180,14 @@ def lookup(entry: dict, producer: dict) -> dict | None:
 
 
 def derive(tree_hash: str, cids: list[str] | None = None, *, force: bool = False,
-           expected_objects: dict[str, str] | None = None, producer: dict | None = None) -> dict:
+           expected_objects: dict[str, str] | None = None, producer: dict | None = None,
+           keep_going: Callable[[], bool] | None = None) -> dict:
+    """Derive the surfaces of ``cids`` (every component when None) and return their records.
+
+    ``keep_going``, when given, is asked before each extraction: False stops there, and the
+    result holds the components done so far (a daemon worker asks whether anyone still
+    wants its job, ``daemon/worker.py``).
+    """
     from cadgen.store.trees import capture_tree as capture
     from cadgen._internal.component_package import decode_geometry_component
     from cadgen._internal.surface_extract import extract_surface_component
@@ -189,6 +220,8 @@ def derive(tree_hash: str, cids: list[str] | None = None, *, force: bool = False
         else:
             actual = None if force else prior
             if actual is None:
+                if keep_going is not None and not keep_going():
+                    break
                 shape = decode_geometry_component(entry, read_verified_object(entry["brep"]))
                 payload = extract_surface_component(shape.wrapped, face_colors=shape.cad_face_ordinal_colors)
                 validate_surface_bytes(payload)
@@ -200,7 +233,9 @@ def derive(tree_hash: str, cids: list[str] | None = None, *, force: bool = False
             raise ValueError("surface producer conflict for the pinned input")
         # The complete verified object is durable first; failure earlier cannot
         # create a readiness marker. Concurrent writers derive identical bytes.
-        write_entry("surface", expected["surfaceInput"], actual)
+        # A hit is a read and writes nothing (STORE.md §8).
+        if actual != prior:
+            write_entry("surface", expected["surfaceInput"], actual)
         result[cid] = actual
     return result
 

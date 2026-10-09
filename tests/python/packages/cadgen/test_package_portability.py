@@ -123,8 +123,7 @@ def package_files(root: Path) -> list[Path]:
     """Every persisted build output: the objects every record's tree reaches
     (components and trees — a moved project is a set of new records over the
     same objects, so those objects are what a move must leave untouched), plus
-    the model-side sidecars under ``root``. Op-memo objects are deliberately
-    not compared: they are a kernel cache, not a result."""
+    the model-side sidecars under ``root``."""
     import json
 
     from cadgen.store.index import iter_entries
@@ -162,11 +161,13 @@ def package_content_files(root: Path) -> list[Path]:
     return [path for path in package_files(root) if not is_run_state(path)]
 
 
-def mtimes(root: Path) -> dict[str, int]:
-    """Every build-output mtime: model-side files keyed root-relative, store
-    package files keyed store-relative. A rebuild changes these; a move
-    followed by a no-op does not. Stronger than reading a producer's own
-    "current" wording, which is exactly the claim under test."""
+def write_identities(root: Path) -> dict[str, int]:
+    """Every build output's write identity: a model-side file's mtime, keyed
+    root-relative, and a store object's inode, keyed store-relative -- a publish
+    that reuses an object claims it, which moves its mtime but never rewrites it
+    (STORE.md §8), while a rewrite is a temp file renamed over it. A rebuild
+    changes these; a move followed by a no-op does not. Stronger than reading a
+    producer's own "current" wording, which is exactly the claim under test."""
     from cadgen.store.paths import objects_dir
 
     out: dict[str, int] = {}
@@ -175,8 +176,9 @@ def mtimes(root: Path) -> dict[str, int]:
         try:
             key = f"<store>/{path.relative_to(store).as_posix()}"
         except ValueError:
-            key = str(path.relative_to(root))
-        out[key] = path.stat().st_mtime_ns
+            out[str(path.relative_to(root))] = path.stat().st_mtime_ns
+        else:
+            out[key] = path.stat().st_ino
     return out
 
 
@@ -225,7 +227,7 @@ class PackagePortabilityTest(unittest.TestCase):
         # A plain .dxf renders directly and is not artifact-managed, so it has
         # no status to assert here (its no-op behavior is the pass above).
         checks = ["widget.step", "rig.step", "imported.step"]
-        return [(name, str(root), str(root / name)) for name in checks]
+        return [(name, str(root / name)) for name in checks]
 
     def test_every_package_kind_was_actually_built(self) -> None:
         # Guards the tests below from passing vacuously on an empty tree: every
@@ -311,40 +313,24 @@ class PackagePortabilityTest(unittest.TestCase):
         shutil.copytree(self.root, moved)
         self.addCleanup(shutil.rmtree, self.root.parent / "deeper", True)
 
-        before = mtimes(moved)
+        before = write_identities(moved)
         self._noop_pass(moved)
-        self.assertEqual(before, mtimes(moved), "relocating the project rebuilt its packages")
+        self.assertEqual(before, write_identities(moved), "relocating the project rebuilt its packages")
 
         from tests.python.support.viewer_status import viewer_artifact_status
 
-        for name, root_arg, source_arg in self._validators(moved):
+        for name, source in self._validators(moved):
             with self.subTest(entry=name):
-                self.assertEqual("compiled", viewer_artifact_status(source_arg, root_arg)["state"])
+                self.assertEqual("compiled", viewer_artifact_status(source)["state"])
 
 
 class RecordedPathHelpersTest(unittest.TestCase):
-    """The two functions every persisted path goes through."""
-
-    def test_a_sibling_and_a_parent_dependency_stay_relative(self) -> None:
-        from cadgen._internal.source_hash import _relative_to_base
-
-        with tempfile.TemporaryDirectory(prefix="cadrel-") as temp_dir:
-            root = Path(temp_dir)
-            (root / "models" / "parts").mkdir(parents=True)
-            (root / "shared").mkdir()
-            base = root / "models"
-            self.assertEqual(
-                "parts/bolt.py", _relative_to_base(base / "parts" / "bolt.py", base)
-            )
-            self.assertEqual(
-                "../shared/dims.py", _relative_to_base(root / "shared" / "dims.py", base)
-            )
+    """The function a persisted path goes through (``render.relative_to_directory``)."""
 
     def test_a_dependency_on_another_volume_is_recorded_rather_than_crashing(self) -> None:
         # os.path.relpath RAISES across Windows drives -- a model on D: importing a helper from
         # C:. There is no relative path to record, and the build must not die over it.
         from cadgen import render
-        from cadgen._internal import source_hash
 
         def _across_drives(*args, **kwargs):
             raise ValueError("path is on mount 'C:', start on mount 'D:'")
@@ -354,10 +340,6 @@ class RecordedPathHelpersTest(unittest.TestCase):
             dependency = root / "elsewhere.py"
             dependency.write_text("X = 1\n", encoding="utf-8")
             with unittest.mock.patch.object(os.path, "relpath", _across_drives):
-                self.assertEqual(
-                    dependency.resolve().as_posix(),
-                    source_hash._relative_to_base(dependency, root),
-                )
                 self.assertEqual(
                     dependency.resolve().as_posix(),
                     render.relative_to_directory(dependency, root),

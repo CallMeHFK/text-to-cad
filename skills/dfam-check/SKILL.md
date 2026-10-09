@@ -1,6 +1,7 @@
 ---
 name: dfam-check
 description: Measure mesh files against Design for Additive Manufacturing (DfAM) rules and report printability findings per process (FDM, SLS, SLA/DLP, metal PBF, MJF). Use when the user asks whether a part is printable, wants overhang/wall-thickness/support analysis of an `.stl`, `.obj`, `.ply`, or `.3mf` mesh, wants a build-orientation recommendation, or wants DfAM redesign guidance before slicing with `$gcode` or regenerating geometry with `$cad`.
+license: MIT
 ---
 
 # DfAM Check
@@ -103,5 +104,4 @@ with target numbers (for example "thicken the wall at [12.4, 3.0, 8.1] from
 0.6 mm to ≥1.2 mm" or "chamfer the overhang at [23.3, 10.0, 52.0] to ≥45°").
 When the `$cad` skill is installed, offer to apply the redesign instructions
 with it and re-measure the regenerated geometry here, repeating until no
-`❌ fail` findings remain. When `$cad-viewer` is installed, hand the measured
-file path(s) to it so the user can inspect the findings visually.
+`❌ fail` findings remain.

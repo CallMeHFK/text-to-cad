@@ -67,6 +67,9 @@ if __name__ == "__main__":
   one axis), `fastened` (0-DOF rigid attachment — needed exactly when
   occurrences are SIBLINGS in the instance tree, like a pin that must orbit
   with its carrier; instance-tree children ride for free).
+- **`limits=(lo, hi)`** is required on every mate that moves, and both ends
+  must be finite: Position sliders and exports read the range. A joint that
+  turns freely takes a full range such as `(-180, 180)`; `math.inf` fails the build.
 - **`parent`/`child`** are occurrence refs: `#`-prefixed labels (canonical —
   label parts with `cadgen.label_shape`) or occurrence ids. They must resolve
   at build or the build fails; `read_scene(path).leaves()` lists saved geometry occurrences.
@@ -95,7 +98,7 @@ if __name__ == "__main__":
   and `0.5*x` to `wrist`).
   Exact gear trains are ratio arithmetic, not code.
   A geared member BACK-DRIVES in the viewer: when exactly one coupling gears a
-  DOF with a nonzero ratio, its Pose slider reads the effective value
+  DOF with a nonzero ratio, its Position slider reads the effective value
   (own + ratio x coupling), is labelled "driven by <coupling>", and dragging it
   moves the COUPLING — `coupling = (target - own)/ratio`, clamped to the
   coupling's limits — so sliding one gear turns the whole train. A member's own
@@ -119,9 +122,9 @@ A document with no model script gets its kinematics from
 same `{mates, couplings, poses}` vocabulary, as inline JSON or a `.json`
 path. `--materials` accepts the named material declaration as inline JSON or
 a `.json` path, and `--animation` accepts a self-contained JavaScript module
-file or source string. The input is read with OCCT and
-re-emitted by the canonical writer, so OUT's bytes are deterministic whichever
-kernel wrote IN:
+file or source string that exports only `clips` (see below). The input is read
+with OCCT and re-emitted by the canonical writer, so OUT's bytes are
+deterministic whichever kernel wrote IN:
 
 ```bash
 cadgen step build vendor/hinge.step STEP/hinge.step \
@@ -143,9 +146,12 @@ re-emitting a byte, and vendor metadata (PMI, GD&T) does not survive the trip.
 
 A STEP document may carry one self-contained JavaScript animation module in
 its unified sidecar. Author the module as a Python string and pass it to
-`@step(animation=...)`. It exports `clips`; an export the renderer does not
-know is a load error, never ignored. The module has no imports. For the arm
-above, add this constant and update its decorator, keeping the same model body:
+`@step(animation=...)`. It exports `clips` and nothing else; leave helpers and
+constants unexported. The renderer refuses a module with any other export, and
+every clip with it, so the build refuses it first, in the renderer's words:
+`arm.py::arm animation: unknown export ease — the renderer understands: clips`.
+The module has no imports. For the arm above, add this constant and update its
+decorator, keeping the same model body:
 
 ```python
 ANIMATION = r"""
@@ -182,11 +188,12 @@ def arm(): ...
   editing its animation to refresh the sidecar. Literal annotation edits may
   reuse cached geometry; computed or imported annotations can require a rebuild.
   See [annotation caching](step-generation.md#annotation-caching).
-- The model build validates and embeds the declaration. A model without
-  `animation=` is simply a model without animation.
+- The model build validates the declaration, exports included, and embeds it.
+  A model without `animation=` is simply a model without animation.
 - Targets are checked at LOAD, against the compiled tree: every clip's
   `update(0, m)` runs once when the module loads, and a label or occurrence
-  id no part carries is reported in the viewer's Status tab and in
+  id no part carries is reported in the viewer's Issues (`Animation
+  unavailable`, in the file's panel) and in
   `snapshot --animation`'s error — not at the first frame that reaches it.
 - Mesh-only models (no `.step`) have no document sidecar; animation is a
   STEP-document concern.
@@ -229,7 +236,7 @@ name with `time=`.
 ### Rendering the whole clip
 
 `--video` renders the SPAN instead of a moment, into the `.mp4` or `.gif` the
-OUT names. Everything else is unchanged — same display or Render settings, camera
+OUT names. Everything else is unchanged — same unified display settings, camera
 and size profile as a still, and the same `--kinematics` base pose underneath:
 
 ```bash
@@ -340,7 +347,7 @@ For `.deformTube()` authoring, morph fitting, memory limits and braid export
 limitations, read [tube deformation and morph export](animation-deformation.md).
 
 The CAD Viewer plays a GLB's embedded rigid, skinned and morph animation through
-its Animation tab in both Inspect and Render. These are baked clips: the STEP
+the playbar it always shows under the model, in both Inspect and Render. These are baked clips: the STEP
 sidecar module's procedural controls are not available in the exported GLB.
 
 An animated export writes ONE node per occurrence instead of the flat,

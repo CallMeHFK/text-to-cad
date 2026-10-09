@@ -13,19 +13,23 @@ import http.client
 import json
 import os
 import socket
+import subprocess
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 from unittest import mock
+from urllib.parse import quote
 
+from cadgen._internal.picker import FilePicker, PickerFailed
 from cadgen.viewer import handler as handler_module
 from cadgen.viewer import reload as reload_module
 from cadgen.viewer.http_app import create_cad_app, host_is_allowed, hostname_only
 
 
 class ServerFixture:
-    """A CadApp on an ephemeral loopback port, torn down on exit."""
+    """A CadApp on an ephemeral loopback port, started in ``root`` (a folder of the fixture's own),
+    torn down on exit."""
 
     def __init__(self, *, host="127.0.0.1", with_dist=True):
         self.tmp = tempfile.TemporaryDirectory()
@@ -41,7 +45,7 @@ class ServerFixture:
             Path(self.dist, "assets", "app.js").write_bytes(b"export const x = 1;\n")
             Path(self.dist, "favicon.ico").write_bytes(b"\x00\x00\x01\x00")
             Path(self.dist, "weird.xyz").write_text("unknown extension", encoding="utf-8")
-        self.app = create_cad_app(root=self.root, host=host, port=0, dist_dir=self.dist)
+        self.app = create_cad_app(host=host, port=0, dist_dir=self.dist, start=self.root)
         self.server = handler_module.serve(self.app, host, 0)
         self.port = self.server.server_address[1]
         self.app.port = self.port
@@ -158,66 +162,13 @@ class NonLoopbackBindDisablesTheGate(unittest.TestCase):
         self.assertTrue(host_is_allowed("anything", "192.168.1.5"))
 
 
-class SelectedFirstCatalog(unittest.TestCase):
-    def setUp(self):
-        self.fixture = ServerFixture()
-        self.addCleanup(self.fixture.close)
-
-    def test_selected_row_is_complete_and_other_rows_are_navigation_only(self):
-        Path(self.fixture.root, "selected.stl").write_bytes(b"selected")
-        Path(self.fixture.root, "other.stl").write_bytes(b"other")
-        with mock.patch.object(self.fixture.app.backend, "_start_catalog_hydration"):
-            status, _, body = self.fixture.request(
-                "GET", "/__cad/catalog?file=selected.stl"
-            )
-        self.assertEqual(status, 200)
-        entries = json.loads(body)["entries"]
-        selected = next(entry for entry in entries if entry["rootRelativeFile"] == "selected.stl")
-        pending = next(entry for entry in entries if entry["rootRelativeFile"] == "other.stl")
-        self.assertEqual(selected["bytes"], len(b"selected"))
-        self.assertTrue(selected["hash"])
-        self.assertEqual(set(pending), {"file", "rootRelativeFile", "catalogPending"})
-        self.assertTrue(pending["catalogPending"])
-
-    def test_homepage_fully_reads_only_the_first_discovered_row(self):
-        Path(self.fixture.root, "a.stl").write_bytes(b"first")
-        Path(self.fixture.root, "b.stl").write_bytes(b"second")
-        with mock.patch.object(self.fixture.app.backend, "_start_catalog_hydration"):
-            status, _, body = self.fixture.request("GET", "/__cad/catalog")
-        self.assertEqual(status, 200)
-        entries = json.loads(body)["entries"]
-        first = next(entry for entry in entries if entry["rootRelativeFile"] == "a.stl")
-        second = next(entry for entry in entries if entry["rootRelativeFile"] == "b.stl")
-        self.assertEqual(first["bytes"], len(b"first"))
-        self.assertEqual(set(second), {"file", "rootRelativeFile", "catalogPending"})
-
-    def test_a_current_complete_snapshot_is_reused_without_another_hydration(self):
-        Path(self.fixture.root, "a.stl").write_bytes(b"first")
-        Path(self.fixture.root, "b.stl").write_bytes(b"second")
-        snapshot = self.fixture.app.backend._full_catalog_snapshot()
-        self.assertIsNotNone(snapshot)
-        self.fixture.app.backend._catalog_snapshot = snapshot
-        with mock.patch.object(self.fixture.app.backend, "_start_catalog_hydration") as hydrate:
-            status, _, body = self.fixture.request("GET", "/__cad/catalog?file=a.stl")
-        self.assertEqual(status, 200)
-        self.assertTrue(all(not entry.get("catalogPending") for entry in json.loads(body)["entries"]))
-        hydrate.assert_not_called()
-
-    def test_a_changed_asset_is_pending_instead_of_serving_a_stale_snapshot(self):
-        Path(self.fixture.root, "a.stl").write_bytes(b"first")
-        Path(self.fixture.root, "b.stl").write_bytes(b"second")
-        snapshot = self.fixture.app.backend._full_catalog_snapshot()
-        self.assertIsNotNone(snapshot)
-        self.fixture.app.backend._catalog_snapshot = snapshot
-        Path(self.fixture.root, "b.stl").write_bytes(b"changed bytes")
-        with mock.patch.object(self.fixture.app.backend, "_start_catalog_hydration"):
-            status, _, body = self.fixture.request("GET", "/__cad/catalog?file=a.stl")
-        self.assertEqual(status, 200)
-        changed = next(
-            entry for entry in json.loads(body)["entries"]
-            if entry["rootRelativeFile"] == "b.stl"
-        )
-        self.assertEqual(set(changed), {"file", "rootRelativeFile", "catalogPending"})
+class BindAsksNoReverseDns(unittest.TestCase):
+    def test_the_bind_never_names_the_host_by_reverse_dns(self):
+        # http.server's own bind calls socket.getfqdn, which waits 35 s on a Mac
+        # whose resolver does not answer: every launch's URL line waited on it.
+        with mock.patch("socket.getfqdn", side_effect=AssertionError("a reverse DNS lookup at bind")):
+            server = handler_module.CadHTTPServer(("127.0.0.1", 0), handler_module.make_handler_class(None), None)
+        server.server_close()
 
 
 class PostGuard(HttpLayerTestCase):
@@ -252,64 +203,150 @@ class PostGuard(HttpLayerTestCase):
 
 class ServerInfo(HttpLayerTestCase):
     def test_payload(self):
-        import json
-
         status, headers, body = self.fixture.request("GET", "/__cad/server")
         self.assertEqual(status, 200)
         info = json.loads(body)
         self.assertEqual(info["app"], "cad-viewer")
-        self.assertEqual(info["backend"], "local-fs")
-        self.assertEqual(info["serverMode"], "serve")
         self.assertIn("identityToken", info)
         self.assertIs(info["autoReload"], reload_module.running_from_source_checkout())
-        self.assertEqual(info["serverFeatures"], ["path-directory"])
-        self.assertEqual(info["stepArtifactGenerationAvailable"], False)
+        self.assertIn(info["platform"], ("darwin", "win32", "linux"))
         self.assertEqual(info["pid"], os.getpid())
         self.assertEqual(info["port"], self.fixture.port)
-        self.assertEqual(info["rootPath"], self.fixture.root)
-        self.assertEqual(info["rootName"], "models")
-        self.assertFalse(info["url"].endswith("/"), "serverInfo.url carries NO trailing slash")
+        # Where a developer's relative links resolve, spelled with "/". A viewer has no root.
+        self.assertEqual(info["start"], self.fixture.root.replace(os.sep, "/"))
+        self.assertIsInstance(info["pick"], bool)
+        self.assertEqual(list(info), ["app", "identityToken", "autoReload", "platform", "user", "start", "pick", "port", "pid"])
         self.assertEqual(headers["cache-control"], "no-store")
-
-    def test_the_key_order_is_the_shipped_one(self):
-        _, _, body = self.fixture.request("GET", "/__cad/server")
-        text = body.decode("utf-8")
-        order = [
-            '"app"', '"viewerVersion"', '"identityToken"', '"autoReload"',
-            '"serverMode"', '"serverFeatures"', '"backend"',
-            '"rootPath"', '"rootName"', '"port"', '"pid"',
-            '"stepArtifactGenerationAvailable"',
-            '"packageDir"', '"startedAt"', '"url"',
-        ]
-        positions = [text.index(key) for key in order]
-        self.assertEqual(positions, sorted(positions))
 
     def test_json_is_compact_and_not_ascii_escaped(self):
         _, _, body = self.fixture.request("GET", "/__cad/server")
         self.assertNotIn(b", ", body)
         self.assertNotIn(b'": ', body)
 
+    @unittest.skipIf(os.name == "nt", "Windows refuses to delete a process's working folder")
+    def test_a_viewer_started_in_a_deleted_folder_resolves_links_from_home(self):
+        gone = tempfile.mkdtemp()
+        held = os.getcwd()
+        os.chdir(gone)
+        try:
+            os.rmdir(gone)
+            app = create_cad_app(host="127.0.0.1", port=0)
+        finally:
+            os.chdir(held)
+        self.assertEqual(app.start, os.path.expanduser("~").replace(os.sep, "/"))
+
     def test_the_file_param_the_client_sends_is_ignored(self):
         status, _, _ = self.fixture.request("GET", "/__cad/server?file=/anything.step")
         self.assertEqual(status, 200)
 
 
+class Catalog(HttpLayerTestCase):
+    """A catalog is one file's, named by its absolute path wherever it is: nothing walks a folder."""
+
+    def catalog(self, file=None):
+        status, _, body = self.fixture.request(
+            "GET", "/__cad/catalog" + ("" if file is None else f"?file={quote(str(file), safe='')}"))
+        return status, json.loads(body)
+
+    def test_a_named_file_is_its_one_row_and_no_file_has_none(self):
+        # Under a hidden folder, outside the folder the viewer started in: named, so listed.
+        part = Path(self.fixture.tmp.name, ".work", "part.stl")
+        part.parent.mkdir(exist_ok=True)
+        part.write_bytes(b"solid p\nendsolid p\n")
+        status, catalog = self.catalog(part)
+        self.assertEqual(status, 200)
+        self.assertEqual(set(catalog), {"schemaVersion", "entries", "revision"})
+        [entry] = catalog["entries"]
+        self.assertEqual(entry["file"], str(part).replace(os.sep, "/"))
+        self.assertEqual(list(entry), ["file", "kind", "url", "hash", "bytes"])
+        # The row's URL is how its bytes are read.
+        self.assertEqual(self.fixture.request("GET", entry["url"])[::2], (200, part.read_bytes()))
+        part.write_bytes(b"solid moved\nendsolid moved\n")
+        self.assertNotEqual(self.catalog(part)[1]["revision"], catalog["revision"])
+        for missing in (None, "", str(part.with_name("gone.stl")), str(part.with_suffix(".txt"))):
+            with self.subTest(file=missing):
+                self.assertEqual(self.catalog(missing)[1]["entries"], [])
+
+    def test_a_file_that_is_not_named_by_its_absolute_path_is_a_400(self):
+        status, body = self.catalog("part.stl")
+        self.assertEqual(status, 400)
+        self.assertIn("absolute path", body["error"])
+
+
+class ExplorerRoutes(HttpLayerTestCase):
+    """The explorer's two reads (``folders.py``) over HTTP: a folder by its absolute path."""
+
+    def read(self, route, path, **query):
+        target = f"/__cad/{route}?path={quote(str(path), safe='')}" + "".join(f"&{k}={quote(v)}" for k, v in query.items())
+        status, _, body = self.fixture.request("GET", target)
+        return status, json.loads(body)
+
+    def test_a_folder_lists_and_searches_and_says_why_it_cannot(self):
+        folder = Path(self.fixture.tmp.name, "explore")
+        (folder / "arm").mkdir(parents=True, exist_ok=True)
+        (folder / "arm" / "link.step").write_bytes(b"x")
+        self.assertEqual(self.read("folder", folder), (200, {"path": str(folder).replace(os.sep, "/"), "entries": [
+            {"name": "arm", "kind": "directory"}], "truncated": False}))
+        self.assertEqual(self.read("search", folder, q="LINK")[1]["results"],
+                         [str(folder / "arm" / "link.step").replace(os.sep, "/")])
+        for route in ("folder", "search"):
+            with self.subTest(route=route):
+                self.assertEqual(self.read(route, "explore")[0], 400)
+                self.assertEqual(self.read(route, folder / "missing")[0], 404)
+                self.assertEqual(self.read(route, folder / "arm" / "link.step")[0], 404)
+        with mock.patch("cadgen.viewer.folders.list_folder", side_effect=PermissionError("denied")):
+            self.assertEqual(self.read("folder", folder)[0], 403)
+
+
+class Pick(HttpLayerTestCase):
+    """The home's Open: the desktop's chooser, held for the page (and never opened by a test)."""
+
+    def pick(self, **behaviour):
+        with mock.patch.object(FilePicker, "choose", **behaviour):
+            status, _, body = self.fixture.request("POST", "/__cad/pick", headers={"x-cadgen-viewer": "1"})
+        return status, json.loads(body)
+
+    def test_a_cad_file_is_its_path_and_anything_else_says_why(self):
+        chosen = os.path.join(self.fixture.root, "part.step")
+        self.assertEqual(self.pick(return_value=chosen), (200, {"path": chosen.replace(os.sep, "/")}))
+        self.assertEqual(self.pick(return_value=None), (200, {"cancelled": True}))
+        status, answer = self.pick(return_value=os.path.join(self.fixture.root, "notes.txt"))
+        self.assertEqual(status, 400)
+        self.assertIn("notes.txt is not one", answer["error"])
+        self.assertEqual(self.pick(side_effect=PickerFailed("no chooser here")), (500, {"error": "no chooser here"}))
+        self.assertEqual(self.fixture.request("POST", "/__cad/pick")[0], 403, "a page from another site cannot open it")
+
+    def test_a_second_open_while_one_is_up_says_so(self):
+        opened, release, answers = threading.Event(), threading.Event(), []
+
+        def run(argv, **_):
+            opened.set()
+            release.wait(10)
+            return subprocess.CompletedProcess(argv, 1, b"", b"")  # the person cancelled
+
+        with mock.patch("cadgen._internal.picker._command", return_value=(["chooser"], {}, False)), \
+                mock.patch("cadgen._internal.picker.subprocess.run", side_effect=run):
+            first = threading.Thread(target=lambda: answers.append(
+                self.fixture.request("POST", "/__cad/pick", headers={"x-cadgen-viewer": "1"})[0]))
+            first.start()
+            self.assertTrue(opened.wait(10))
+            second = self.fixture.request("POST", "/__cad/pick", headers={"x-cadgen-viewer": "1"})
+            release.set()
+            first.join(10)
+        self.assertEqual((second[0], json.loads(second[2])), (500, {"error": "A file chooser is already open."}))
+        self.assertEqual(answers, [200])
+
+
 class ArtifactBuildPayload(HttpLayerTestCase):
-    """``ref`` and ``catalog`` describe the SAME moment.
+    """The build route answers at once: it never holds a request for a build.
 
-    The Node backend took ``ref`` from a scan made BEFORE the build and
-    ``catalog`` from one made after, so a cold import shipped a pre-import ref
-    (no ``&v=`` cache-buster) inside a post-import catalog. This backend takes
-    one post-build scan and derives both from it: the import is exactly the
-    event that changes this entry's URL, and one payload cannot honestly
-    describe two moments.
-
-    An ``.stl`` is the subject on purpose — ``build_artifact`` answers "compiled"
+    An ``.stl`` is the subject on purpose -- ``build_artifact`` answers "compiled"
     for an unowned entry without touching the kernel, so this pins the payload
-    shape rather than exercising a compile.
+    shape rather than exercising a compile (``test_document_compile`` follows a
+    compile through the status route).
     """
 
-    def test_ref_is_the_url_of_the_entry_in_the_attached_catalog(self):
+    def test_an_entry_with_nothing_to_build_answers_compiled_and_nothing_else(self):
         import json as json_module
 
         target = os.path.join(self.fixture.root, "part.stl")
@@ -320,13 +357,7 @@ class ArtifactBuildPayload(HttpLayerTestCase):
             headers={"x-cadgen-viewer": "1"},
         )
         self.assertEqual(status, 200, body[:400])
-        payload = json_module.loads(body)
-        self.assertEqual(payload["state"], "compiled")
-        entry = next(
-            e for e in payload["catalog"]["entries"] if e["rootRelativeFile"] == "part.stl"
-        )
-        self.assertTrue(payload["ref"])
-        self.assertEqual(payload["ref"], entry["url"])
+        self.assertEqual(json_module.loads(body), {"ok": True, "state": "compiled"})
 
 
 class StaticDistAndSpa(HttpLayerTestCase):
@@ -354,6 +385,21 @@ class StaticDistAndSpa(HttpLayerTestCase):
         self.assertEqual(status, 404)
         self.assertEqual(headers["content-type"], "text/plain; charset=utf-8")
         self.assertEqual(body, b"Not found")
+
+    def test_a_drawing_font_the_bundle_leaves_out_is_404_not_html(self):
+        # The web bundle ships the drawing editor's fonts without the CJK
+        # family; a font loader handed index.html at 200 fails to decode it
+        # instead of falling back to a system font.
+        status, headers, body = self.fixture.request("GET", "/excalidraw/fonts/Xiaolai/Xiaolai-Regular.woff2")
+        self.assertEqual(status, 404)
+        self.assertEqual(headers["content-type"], "text/plain; charset=utf-8")
+        self.assertEqual(body, b"Not found")
+
+    def test_drawing_fonts_and_their_notices_are_typed(self):
+        from cadgen.viewer.content_types import content_type_for_static_asset
+        self.assertEqual(content_type_for_static_asset("excalidraw/fonts/Excalifont/a.woff2"), "font/woff2")
+        self.assertEqual(content_type_for_static_asset("excalidraw/fonts/Liberation/LiberationSans-Regular.ttf"), "font/ttf")
+        self.assertEqual(content_type_for_static_asset("excalidraw/licenses/NOTICE.txt"), "text/plain; charset=utf-8")
 
     def test_unknown_extension_gets_no_content_type_at_all(self):
         status, headers, _ = self.fixture.request("GET", "/weird.xyz")
@@ -428,6 +474,77 @@ class NoDistConfigured(unittest.TestCase):
 
 
 class Streaming(unittest.TestCase):
+    def test_atomic_replacement_before_open_uses_the_open_file_length(self):
+        from cadgen.viewer.response import Response
+        from cadgen.mcp.tunnel import ViewerTunnel
+        import base64
+
+        fixture = ServerFixture()
+        original = Response.stream_file
+        model = Path(fixture.root, "part.stl")
+        url = f"/__cad/asset?file={quote(str(model), safe='')}"
+        try:
+            for payload in (b"small", b"larger replacement" * 8):
+                for via_tunnel in (False, True):
+                    with self.subTest(length=len(payload), tunnel=via_tunnel):
+                        model.write_bytes(b"original contents")
+
+                        def replace(response, path, stat_result, *args):
+                            pending = Path(path).with_suffix(".pending")
+                            pending.write_bytes(payload)
+                            os.replace(pending, path)
+                            return original(response, path, stat_result, *args)
+
+                        with mock.patch.object(Response, "stream_file", replace):
+                            if via_tunnel:
+                                reply = ViewerTunnel().serve(method="GET", url=url, headers={}, body=b"")
+                                status, headers, body = reply["status"], reply["headers"], base64.b64decode(reply["body"])
+                            else:
+                                conn = http.client.HTTPConnection("127.0.0.1", fixture.port, timeout=1)
+                                try:
+                                    conn.request("GET", url)
+                                    reply = conn.getresponse()
+                                    status, headers, body = reply.status, dict(reply.getheaders()), reply.read()
+                                finally:
+                                    conn.close()
+                        self.assertEqual((status, int(headers["content-length"]), body), (200, len(payload), payload))
+        finally:
+            fixture.close()
+
+    def test_atomic_replacement_after_headers_keeps_the_open_inode_and_etag(self):
+        from cadgen.viewer.response import Response
+        from cadgen.mcp.tunnel import ViewerTunnel
+        import base64
+
+        fixture = ServerFixture()
+        model = Path(fixture.root, "part.stl")
+        payload = b"original contents"
+        model.write_bytes(payload)
+        stat = model.stat()
+        original = Response._begin
+
+        def replace(response, status, headers):
+            original(response, status, headers)
+            pending = model.with_suffix(".pending")
+            pending.write_bytes(b"replacement contents")
+            try:
+                os.replace(pending, model)
+            except PermissionError:
+                # Windows refuses to replace a file a handle holds open (cadgen's own
+                # atomic_replace waits that out); the open stream keeps the original
+                # bytes on either platform, which is what this pins.
+                if os.name != "nt":
+                    raise
+
+        try:
+            with mock.patch.object(Response, "_begin", replace):
+                reply = ViewerTunnel().serve(method="GET", url=f"/__cad/asset?file={quote(str(model), safe='')}", headers={"range": "bytes=1-4"}, body=b"")
+                status, headers, body = reply["status"], reply["headers"], base64.b64decode(reply["body"])
+            self.assertEqual((status, body), (206, payload[1:5]))
+            self.assertEqual(headers["etag"], f'"{stat.st_ino:x}-{stat.st_size:x}-{stat.st_mtime_ns:x}"')
+        finally:
+            fixture.close()
+
     def test_a_large_file_streams_with_an_accurate_content_length(self):
         fixture = ServerFixture()
         try:
@@ -612,6 +729,21 @@ class RequestBodies(HttpLayerTestCase):
                 )
                 self.assertIn(b"413", raw.split(b"\r\n")[0])
                 self.assertIn(b"connection: close", raw.lower())
+
+    def test_a_refused_body_is_read_before_the_close_so_its_answer_arrives(self):
+        # A socket closed with bytes unread is reset, and the reset takes the 413 with it: on
+        # Windows even for a small body, anywhere for one the client is still writing.
+        body = b"x" * (1 << 20)
+        sock = socket.create_connection(("127.0.0.1", self.fixture.port), timeout=10)
+        received = b""
+        try:
+            sock.sendall(b"POST /__cad/reveal HTTP/1.1\r\nHost: 127.0.0.1\r\nx-cadgen-viewer: 1\r\n"
+                         + f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+            while chunk := sock.recv(65536):
+                received += chunk
+        finally:
+            sock.close()
+        self.assertTrue(received.startswith(b"HTTP/1.1 413"), received[:200])
 
     def test_a_chunked_body_is_refused_deliberately(self):
         # The stdlib decodes no chunked framing at all. Silently mangling a

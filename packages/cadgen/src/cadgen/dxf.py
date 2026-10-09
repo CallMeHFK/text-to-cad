@@ -3,12 +3,13 @@
 ``@dxf`` DECLARES a drawing; ``dxf.snapshot(...)`` renders one. They are the
 same object — this module is callable (see
 :mod:`cadgen._internal.format_namespace`) — so the drawing family is one table
-row like every other format (design/format-doors.md).
+row like every other format (README law 6).
 
 **There is no ``dxf.build``** (deleted, hard cutover). A ``.dxf`` has no derived
-state a door must materialize: the file IS the product, the viewer parses it
-directly, and snapshot meshes it on demand. Drawings are made the way every
-model is made — by running the script: ``python drawing.py``.
+state a door must materialize: the file IS the product, and both the CAD Viewer
+and snapshot draw it from the same server-side 2D payload
+(:mod:`cadgen.drawing_payload`). Drawings are made the way every model is made —
+by running the script: ``python drawing.py``.
 
 Import discipline: nothing here may pull in ezdxf/OCP at module scope (see
 :mod:`cadgen.step`).
@@ -17,12 +18,12 @@ Import discipline: nothing here may pull in ezdxf/OCP at module scope (see
 from __future__ import annotations
 
 from cadgen._internal.format_namespace import callable_namespace
-from cadgen._internal.snapshot_door import mesh_snapshot_verb
+from cadgen._internal.snapshot_door import drawing_snapshot_verb
 
 __all__ = ["snapshot"]
 
-#: ``cadgen dxf snapshot``'s verb: render a drawing as its 3D flat pattern.
-snapshot = mesh_snapshot_verb("dxf")
+#: ``cadgen dxf snapshot``'s verb: draw a ``.dxf`` flat, as the viewer draws it.
+snapshot = drawing_snapshot_verb("dxf")
 
 
 def __getattr__(name: str):

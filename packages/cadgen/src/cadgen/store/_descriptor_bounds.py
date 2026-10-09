@@ -1,12 +1,12 @@
 """Exact bounds and private preparation for bounded pinned-link descriptors.
 
-Only immutable numeric bounds enter the existing op index. Captured bytes,
-appearance recipes and native prototypes belong to one build invocation.
+Only immutable numeric bounds enter the store (``cadgen.store.bounds``).
+Captured bytes, appearance recipes and native prototypes belong to one build
+invocation.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from functools import lru_cache
 import hashlib
 import json
 import math
@@ -17,7 +17,7 @@ from typing import Any
 from cadgen.store.objects import object_path
 from cadgen.store.trees import flatten_tree
 
-OP = "component_bbox.canonical_full_placement.algorithm1"
+ALGORITHM = "component_bbox.canonical_full_placement.algorithm1"
 MAX_TREE_BYTES = 64 * 1024
 MAX_BREP_BYTES = 768 * 1024
 MAX_SURF_BYTES = 4 * 1024 * 1024
@@ -30,23 +30,6 @@ MAX_APPEARANCE_BYTES = 256 * 1024
 
 class Ineligible(ValueError):
     """The ordinary whole-document path must handle this descriptor."""
-
-
-@lru_cache(maxsize=1)
-def _native_identity() -> str:
-    # OCP.__version__ is exported by the loaded native extension, not inferred
-    # from build123d. Include the required no-VTK provider identity too; an
-    # installation using a different provider must not share this disk key.
-    import OCP
-    from importlib.metadata import PackageNotFoundError, version
-    native = getattr(OCP, "__version__", None)
-    try:
-        binding = version("cadquery-ocp-novtk")
-    except PackageNotFoundError as error:
-        raise Ineligible("missing native binding identity") from error
-    if type(native) is not str or not native or native == "unknown" or not binding:
-        raise Ineligible("unsupported native identity")
-    return f"native={native};provider=cadquery-ocp-novtk;binding={binding}"
 
 
 def _box_values(value: Any) -> tuple[float, ...]:
@@ -231,8 +214,9 @@ class Snapshot:
         return self.prepare_document().materialize(label)
 
     def bounds(self, *, shapes: dict[str, Any] | None = None) -> dict[str, list[float]]:
-        from cadgen._internal import component_package as cp, op_memo
-        from cadgen.store.materialize import _location_from_matrix
+        from cadgen._internal import component_package as cp
+        from cadgen.store.bounds import cached_box
+        from cadgen.store.materialize import _location_from_matrix, _placed_copy
         payloads, breps = dict(self.objects), dict(self.component_breps)
         entries = self.descriptor()["components"]
         boxes = []
@@ -244,15 +228,13 @@ class Snapshot:
                     shapes[cid] if shapes is not None
                     else cp.decode_geometry_component(entries[cid], payloads[brep])
                 )
-                placed = private.moved(_location_from_matrix(list(transform)))
+                placed = _placed_copy(private, _location_from_matrix(list(transform)))
                 box = cp._bbox_from_shape(placed)
                 if type(box) is not dict:
                     raise Ineligible("native bounds unavailable")
                 return _box_values([*box["min"], *box["max"]])
 
-            values = op_memo.memoized_value(
-                OP, (brep, struct.pack("<16d", *transform), _native_identity()), compute
-            )
+            values = cached_box(ALGORITHM, (brep, struct.pack("<16d", *transform)), compute)
             boxes.append(_box_values(values))
         return {"min": [min(box[a] for box in boxes) for a in range(3)],
                 "max": [max(box[a] for box in boxes) for a in range(3, 6)]}
@@ -260,7 +242,7 @@ class Snapshot:
 
 @dataclass(frozen=True)
 class PreparedDocument:
-    """Invocation-owned, validated native prototypes; never an op-cache value."""
+    """Invocation-owned, validated native prototypes; never a cached value."""
     descriptor_json: bytes
     _shapes: dict[str, Any]
 

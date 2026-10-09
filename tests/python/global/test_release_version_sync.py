@@ -1,12 +1,12 @@
 """The release version stamp has to reach every version field it owns.
 
 `scripts/release/sync-version.mjs` can name several paths that are the SAME FILE: a mirrored
-`apps/viewer/packages/...` entry is a symlink to the canonical package. Each target reads its file
+`apps/web/packages/...` entry is a symlink to the canonical package. Each target reads its file
 before any write happens, so two targets stamping one file means the last write wins -- and a
 mirror declaring fewer fields than the canonical target silently reverts the field only the
 canonical one knows about.
 
-That is not hypothetical: adding a package's version to `packages/cadgen-js/package-lock.json`
+That is not hypothetical: adding a package's version to `packages/core/package-lock.json`
 without adding it to that file's two symlinked mirrors made the 0.4.10 release fail its own
 version gate, after the bump and before anything was published.
 
@@ -19,8 +19,9 @@ property rather than as that one package's name.
 from __future__ import annotations
 
 import json
-
+import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -45,16 +46,16 @@ def _node(script: str, cwd: Path | None = None) -> str:
 class VersionSyncMirrorTests(unittest.TestCase):
     def test_targets_naming_one_file_are_merged_into_one_write(self) -> None:
         """Two targets on the same real file become one target holding both field sets."""
-        if not repo_path("apps", "viewer", "packages", "cadgen-js").is_symlink():
+        if not repo_path("apps", "web", "packages", "core").is_symlink():
             self.skipTest("not in the development symlink layout")
         # The script resolves target paths against the repo root, so the pair below has to be
         # real repo paths: the canonical lockfile and the mirror that symlinks to it.
         script = (
             "const { mergeTargetsByRealPath } = await import(%s);\n"
             "const merged = mergeTargetsByRealPath([\n"
-            '  { path: "packages/cadgen-js/package-lock.json",'
+            '  { path: "packages/core/package-lock.json",'
             ' fields: [["version"], ["packages", "", "version"]] },\n'
-            '  { path: "apps/viewer/packages/cadgen-js/package-lock.json", fields: [["version"]], required: false },\n'
+            '  { path: "apps/web/packages/core/package-lock.json", fields: [["version"]], required: false },\n'
             "]);\n"
             "console.log(JSON.stringify({ count: merged.length, fields: merged[0].fields,"
             " treatedAsRequired: merged[0].required !== false }));"
@@ -102,6 +103,29 @@ class VersionSyncMirrorTests(unittest.TestCase):
                         declared,
                         f"{target['path']} would ship a stale version for {name or 'the root package'}",
                     )
+
+    def test_a_file_with_a_version_and_a_pin_takes_both(self) -> None:
+        """The Gemini extension is a JSON target and a pin target: stamping one must keep the other."""
+        targets = json.loads(_node(
+            "const { jsonTargets, pinTargets } = await import(%s);\n"
+            "console.log(JSON.stringify([...jsonTargets.map((t) => t.path), ...pinTargets]));"
+            % json.dumps(SYNC_SCRIPT.as_uri())))
+        self.assertIn("gemini-extension.json", targets)
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch).resolve()  # the script runs main() only when argv[1] is its real path
+            for relative in {*targets, "packages/cadgen/pyproject.toml", "scripts/release/sync-version.mjs"}:
+                if repo_path(relative).is_file():
+                    (root / relative).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(repo_path(relative), root / relative)
+            (root / "VERSION").write_text("9.9.9\n", encoding="utf-8")
+            result = subprocess.run(["node", str(root / "scripts/release/sync-version.mjs")],
+                                    capture_output=True, text=True, timeout=120)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            manifest = json.loads((root / "gemini-extension.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["version"], "9.9.9")
+            self.assertIn("cadgen==9.9.9", manifest["mcpServers"]["cad"]["args"])
+            # Every cadgen skill's launch command moves with the server's, so they stay one installation.
+            self.assertIn("--from cadgen==9.9.9 cadgen`", (root / "skills/cad/SKILL.md").read_text(encoding="utf-8"))
 
     def test_derived_metadata_is_synced_at_the_current_version(self) -> None:
         """The gate the release workflows run, at the version in VERSION."""

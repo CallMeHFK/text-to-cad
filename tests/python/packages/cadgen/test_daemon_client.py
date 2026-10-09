@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -28,6 +29,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from cadgen.daemon import client, transport  # noqa: E402
 from cadgen.daemon import pool as pool_mod  # noqa: E402
 from cadgen.daemon import server  # noqa: E402
+from cadgen.daemon.jobs import JobLedger
 
 
 class _ScriptedChannel:
@@ -149,6 +151,25 @@ class ResidentProcessLifecycle(unittest.TestCase):
         self.assertEqual(popen.call_args.kwargs["cwd"], tempfile.gettempdir())
         ensure.assert_not_called()
 
+    def test_the_daemon_takes_no_telemetry_switch_from_the_client_that_started_it(self):
+        # It serves every client; each client's switch travels with its own builds instead.
+        spawned = mock.Mock(pid=1234)
+        started_from = {"PATH": "/bin", "DO_NOT_TRACK": "1", "CADGEN_TELEMETRY": "0"}
+        with tempfile.TemporaryDirectory(prefix="cadgen-daemon-launch-") as tmp, \
+                mock.patch.object(client.transport, "ensure_authkey"), \
+                mock.patch.object(client, "daemon_identity", return_value="test"), \
+                mock.patch.object(client, "log_path", return_value=pathlib.Path(tmp) / "daemon.log"), \
+                mock.patch.object(client.subprocess, "Popen", return_value=spawned) as popen:
+            from cadgen.daemon import executors
+
+            with mock.patch.object(executors, "worker_env", return_value=started_from):
+                self.assertIs(client._spawn_daemon("test-address"), spawned)
+
+        env = popen.call_args.kwargs["env"]
+        self.assertEqual(env["PATH"], "/bin")
+        for name in ("DO_NOT_TRACK", "CADGEN_TELEMETRY"):
+            self.assertNotIn(name, env)
+
     def test_replaced_key_is_retried_only_after_the_live_owner_republishes(self):
         channel = mock.Mock()
         with mock.patch.object(client.transport, "read_authkey", side_effect=[b"stale", b"owned"]), \
@@ -174,6 +195,40 @@ class ResidentProcessLifecycle(unittest.TestCase):
         self.assertEqual(worker.pid, 1234)
         self.assertEqual(popen.call_args.kwargs["cwd"], tempfile.gettempdir())
 
+    def test_prewarm_starts_nothing_when_the_daemon_is_off(self):
+        # The viewer warms the daemon at every launch. CADGEN_DAEMON=0 must mean none
+        # starts: the launcher tests rely on it to keep dozens of launches daemon-free.
+        with mock.patch.dict("os.environ", {"CADGEN_DAEMON": "0"}), \
+                mock.patch.object(client, "_connect_or_spawn", side_effect=AssertionError("a daemon was started")):
+            self.assertFalse(client.prewarm())
+
+    def test_prewarm_replaces_a_daemon_left_by_older_code(self):
+        stale, current = _ScriptedChannel([{"restart": True}]), _ScriptedChannel([{"status": {}}])
+        with mock.patch.dict("os.environ", {"CADGEN_DAEMON": "1"}), \
+                mock.patch.object(client, "daemon_supported", return_value=True), \
+                mock.patch.object(client, "daemon_address", return_value="test-address"), \
+                mock.patch.object(client, "_connect_or_spawn", side_effect=[stale, current]) as connect:
+            import os
+
+            os.environ.pop("CADGEN_DAEMON_CHILD", None)
+            self.assertTrue(client.prewarm())
+        self.assertEqual(connect.call_count, 2)
+        self.assertEqual([frame["kind"] for frame in stale.sent + current.sent], ["status", "status"])
+
+    def test_a_build_verifies_its_read_back_exactly_when_its_caller_asked(self):
+        # CADGEN_VERIFY_READBACK is one build's request (STORE.md §10). It travels with the
+        # job, and a job whose caller did not set it runs without it, in a daemon started with it.
+        import os
+
+        from cadgen.daemon import worker
+
+        with mock.patch.dict("os.environ", {"CADGEN_VERIFY_READBACK": "1"}):
+            self.assertEqual(client.forwarded_env().get("CADGEN_VERIFY_READBACK"), "1")
+            worker._apply_request_env({"env": {}})
+            self.assertNotIn("CADGEN_VERIFY_READBACK", os.environ)
+            worker._apply_request_env({"env": {"CADGEN_VERIFY_READBACK": "1"}})
+            self.assertEqual(os.environ.get("CADGEN_VERIFY_READBACK"), "1")
+
     def test_the_daemon_popen_is_retained_by_an_owned_reaper(self):
         process = mock.Mock(pid=4321)
         finished = threading.Event()
@@ -191,8 +246,9 @@ class ServerRelaysTheDeath(unittest.TestCase):
         pid = 777
         extra = False
 
-        def __init__(self) -> None:
+        def __init__(self, exit_status: int = -9) -> None:
             self.sent: list[dict] = []
+            self.exit_status = exit_status
 
         def send(self, request: dict) -> None:
             self.sent.append(request)
@@ -200,7 +256,7 @@ class ServerRelaysTheDeath(unittest.TestCase):
         def frames(self, **_kwargs):
             yield {"stream": "stdout", "data": "partial "}
             raise pool_mod.WorkerGone(
-                "worker 777 was killed by SIGKILL (signal 9)", exit_status=-9
+                f"worker 777 {pool_mod.describe_exit(self.exit_status)}", exit_status=self.exit_status
             )
 
         def alive(self) -> bool:
@@ -220,19 +276,45 @@ class ServerRelaysTheDeath(unittest.TestCase):
         conn = self._Conn()
         request = {"tool": "step-compile", "argv": ["x.step"], "cwd": "/w", "prog": "cadgen step compile"}
         logged: list[str] = []
-        with mock.patch.object(server, "_POOL", pool), \
+        jobs = JobLedger()
+        with mock.patch.object(server, "_JOBS", jobs), \
+                mock.patch.object(server, "_POOL", pool), \
                 mock.patch.object(server, "_log", logged.append), \
                 mock.patch.object(server, "CLIENT_LIVENESS_INTERVAL_SECONDS", 60.0):
             server._handle_request(conn, request)
         kinds = [next(iter(frame)) for frame in conn.frames if frame != {"stream": "stdout", "data": ""}]
         self.assertEqual(kinds, ["stream", "workerDied", "exit"])
         died = next(frame["workerDied"] for frame in conn.frames if "workerDied" in frame)
+        self.assertEqual(jobs.snapshot()[0]["error"], died["detail"])
         self.assertEqual(died["pid"], 777)
         self.assertEqual(died["exitStatus"], -9)
-        self.assertIn("SIGKILL", died["detail"])
+        self.assertIn(pool_mod.describe_exit(-9), died["detail"])  # the worker's own words, as this platform names the signal
         self.assertEqual(conn.frames[-1], {"exit": 1})
         pool.release.assert_called_once_with(worker, healthy=False)
         self.assertTrue(any("died mid-job" in line for line in logged), logged)
+
+    @unittest.skipIf(os.name == "nt", "a Windows worker's exit status is a code, never a signal")
+    def test_a_worker_someone_stopped_is_no_crash_and_one_that_faulted_still_is(self):
+        import signal
+
+        # SIGTERM is someone stopping it (a person, a logout, a shutdown): the build was stopped, and the
+        # client still hears how its worker went. A fault, or the kernel's kill for memory, is a crash.
+        for status, ended in ((-signal.SIGTERM, "cancelled"), (-signal.SIGINT, "cancelled"), (-signal.SIGHUP, "cancelled"),
+                              (-signal.SIGSEGV, "crashed"), (-signal.SIGKILL, "crashed"), (-signal.SIGABRT, "crashed")):
+            with self.subTest(status=status):
+                pool = mock.Mock()
+                pool.acquire.return_value = self._DyingWorker(status)
+                conn = self._Conn()
+                build = mock.Mock()
+                with mock.patch.object(server, "_JOBS", JobLedger()), mock.patch.object(server, "_POOL", pool), \
+                        mock.patch.object(server, "_log"), mock.patch.object(server, "CLIENT_LIVENESS_INTERVAL_SECONDS", 60.0), \
+                        mock.patch.object(server.telemetry, "build", return_value=build), \
+                        mock.patch.object(server.telemetry, "worker_died") as worker_died:
+                    server._handle_request(conn, {"tool": "step-compile", "argv": ["x.step"], "cwd": "/w",
+                                                  "prog": "cadgen step compile"})
+                self.assertEqual(build.finish.call_args.args[1], ended)
+                self.assertEqual(worker_died.call_args_list, [mock.call(status)] if ended == "crashed" else [])
+                self.assertEqual(next(frame["workerDied"]["exitStatus"] for frame in conn.frames if "workerDied" in frame), status)
 
 
 class ServerStatusIdentity(unittest.TestCase):

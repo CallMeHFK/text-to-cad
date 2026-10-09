@@ -3,7 +3,7 @@
 ``@step`` DECLARES a model; the verbs OPERATE on documents. They are the same
 object — this module is callable (see
 :mod:`cadgen._internal.format_namespace`) — so a format is one table row:
-decorator, verbs, and generated CLI together (design/format-doors.md).
+decorator, verbs, and generated CLI together (README law 6).
 
 Two verbs make documents, and the difference is what lands on disk:
 
@@ -17,8 +17,8 @@ Two verbs make documents, and the difference is what lands on disk:
   which is what tells the two verbs apart at the command line.
 
 Model scripts are RUN, never passed here: ``python model.py`` is the one source
-door (design/pose-animation-split.md, CLI/doors follow-on). Every verb takes a
-DOCUMENT and refuses a ``.py`` by naming the run.
+door (README law 7). Every verb takes a DOCUMENT and refuses a ``.py`` by
+naming the run.
 
 Import discipline: nothing here may pull in OCP/build123d at module scope. A
 model script pays this import before its freshness gate runs, and the whole
@@ -58,16 +58,15 @@ def compile(  # noqa: A001 - the verb IS "compile"; the builtin is not used here
     force: recompile even when the tree is already current.
     verbose: show detailed progress and timing on stderr.
     """
-    from cadgen._internal.doors import document_target
+    from cadgen._internal.doors import STEP_SUFFIXES, document_target
     from cadgen.step_artifact_cli import build_step_artifact
 
     # The document's BYTES are compiled, generated or imported alike; whether its
     # source has moved on is its model's business, not this door's.
-    document = document_target(target, suffixes=(".step", ".stp"))
+    document = document_target(target, suffixes=STEP_SUFFIXES)
     payload = build_step_artifact(
         repo_root=Path.cwd(),
         step=document,
-        source_path=None,
         force=force,
         verbose=verbose,
     )
@@ -136,7 +135,7 @@ def build(
         destination,
         kinematics_def=kinematics_def,
         materials=load_materials_config(materials, where=where),
-        animation=load_animation_source(animation, where=where),
+        animation=load_animation_source(animation, where=where, document=destination),
         force=force,
         logger=CliLogger(where, verbose=verbose),
     )

@@ -1,11 +1,12 @@
 """The CAD Viewer's backend: ``cadgen viewer``.
 
-A Python HTTP server for the built React client, launched from the directory it
-should serve (the cwd IS the served directory)::
+A Python HTTP server for the built React client, serving every CAD file on this
+machine by absolute path, on port 3245 or the one ``--port`` names, launched from
+anywhere::
 
-    cd /absolute/dir && cadgen viewer        # or: python -m cadgen.viewer
+    cadgen viewer        # or: python -m cadgen.viewer
 
-The client is built from ``apps/viewer`` in the source repository and ships in
+The client is built from ``apps/web`` in the source repository and ships in
 the wheel under ``cadgen/_runtime/viewer`` (see ``cadgen.assets.viewer_dist_dir``).
 
 Nothing in this package may import the CAD kernel (OCP, build123d) at module

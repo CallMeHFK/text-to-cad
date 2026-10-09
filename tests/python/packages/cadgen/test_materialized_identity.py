@@ -72,7 +72,7 @@ class MaterializedIdentityTest(unittest.TestCase):
         from cadgen._internal.step_scene_loader import load_step_scene
         from cadgen._internal.step_scene_mesh import scene_leaf_occurrences, scene_occurrence_shape
 
-        scene = load_step_scene(self.root / "parent.step", record_read=False)
+        scene = load_step_scene(self.root / "parent.step")
         return sum(self.signed_volume(scene_occurrence_shape(scene, node)) for node in scene_leaf_occurrences(scene))
 
     def test_root_placement_label_color_overrides_keep_the_link(self):
@@ -279,16 +279,16 @@ class MaterializedIdentityTest(unittest.TestCase):
 
     def test_mesh_and_measurement_leave_geometry_intact_and_caller_flags_untouched(self):
         from OCP.BRepMesh import BRepMesh_IncrementalMesh
-        from cadgen._internal.op_memo import _write_brep
+        from cadgen._internal.component_package import _shape_brep_bytes
         from cadgen.store.build import _tagged_intact
         from cadgen.store.materialize import materialize
 
         tree, child = self.child(curved=True)
         _ = child.bounding_box()
         BRepMesh_IncrementalMesh(child.wrapped, 0.1, False, 0.5, False)
-        before = _write_brep(child.wrapped)
+        before = _shape_brep_bytes(child.wrapped)
         self.assertEqual(_tagged_intact(child), tree)
-        self.assertEqual(_write_brep(child.wrapped), before)
+        self.assertEqual(_shape_brep_bytes(child.wrapped), before)
         fresh = materialize(tree)
         self.assertFalse(child.wrapped.IsPartner(fresh.wrapped))
         self.assertEqual(_tagged_intact(fresh), tree)

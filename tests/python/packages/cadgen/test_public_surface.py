@@ -91,7 +91,13 @@ ADAPTERS: dict[str, frozenset[str]] = {
     # The one validator that cannot be a mirror: `--packages NAME=PATH` is
     # repeatable, and a repeatable key/value map is outside the derivable set.
     "urdf validate": frozenset({"path", "strict", "packages", "verbose"}),
-
+    # A host starts it and speaks MCP on its standard streams; it takes no options. Where the
+    # install came from is in the server's environment, which the plugin's startup config sets: an
+    # older cadgen ignores an environment variable it does not know, never a flag
+    # (`cadgen/_internal/channel.py`).
+    "mcp": frozenset(),
+    # The person's telemetry choice: status, on or off.
+    "telemetry": frozenset({"action"}),
 }
 
 # Commands not yet re-homed under the schema. This set only shrinks.
@@ -100,10 +106,9 @@ UNCLASSIFIED = {
     "store",
     "daemon",
     "daemon status",
-    # The viewer launcher owns its parser: the launch contract (reuse-or-start,
-    # port roll, the --json announce line) is not a function signature to mirror.
+    # The viewer launcher owns its parser: the launch contract (reuse, replace or
+    # start on its one port, the --json announce line) is not a function signature to mirror.
     "viewer",
-    "viewer list",
     "viewer stop",
 }
 
@@ -192,6 +197,24 @@ class Manifest(unittest.TestCase):
         declared = authoring.registered_model(this_file)
         self.assertEqual({d.fmt for d in declared.mesh_exports}, {"stl"})
 
+    def test_a_model_hands_out_no_raw_body(self):
+        # A model's body runs in its own build, reached through a pin. The
+        # wrapper does not hand it out, so nothing (``inspect.unwrap``,
+        # ``arm.__wrapped__()``) can run it inline behind a caller's closure.
+        import inspect
+
+        import cadgen
+        from cadgen import authoring
+        from cadgen.store.index import model_ref
+
+        def shape():
+            return None
+
+        self.addCleanup(authoring._REGISTRY.pop, model_ref(Path(__file__).resolve(), "shape"), None)
+        wrapped = cadgen.step(shape)
+        self.assertFalse(hasattr(wrapped, "__wrapped__"))
+        self.assertIs(inspect.unwrap(wrapped), wrapped)
+
     def test_the_retired_commands_are_gone(self):
         # No backwards compatibility: `cadgen import` folded into the STEP
         # door, `cadgen step export` into the three per-format doors, and
@@ -202,6 +225,81 @@ class Manifest(unittest.TestCase):
         for module in ("cadgen.cli.step_import", "cadgen.cli.step_export", "cadgen.cli.dxf_build"):
             with self.subTest(module=module), self.assertRaises(ModuleNotFoundError):
                 importlib.import_module(module)
+
+    def _dispatch(self, *argv: str) -> tuple[int, str, str]:
+        import contextlib
+        import io
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_every_retired_command_names_its_replacement(self):
+        # Law 8: a retired surface fails loudly with a teaching error naming its
+        # replacement -- never "unknown command", never an alias that still works.
+        cases = {
+            ("gen", "model.py"): ("cadgen gen has been removed", "python <model>.py"),
+            ("gen",): ("cadgen gen has been removed", "python <model>.py"),
+            ("step", "export", "part.step", "--stl", "part.stl"): (
+                "cadgen step export has been removed", "cadgen stl build IN.step", "cadgen glb build",
+                "cadgen 3mf build",
+            ),
+            ("step", "inspect", "part.step"): ("cadgen step inspect has been removed", "read_scene"),
+            ("srdf", "snapshot", "robot.srdf"): ("cadgen snapshot <file>.srdf",),
+        }
+        for argv, expected in cases.items():
+            with self.subTest(argv=argv):
+                code, out, err = self._dispatch(*argv)
+                self.assertEqual(2, code)
+                self.assertEqual("", out)
+                self.assertNotIn("unknown command", err)
+                for text in expected:
+                    self.assertIn(text, err)
+
+    def test_a_known_format_with_a_wrong_verb_lists_that_formats_verbs(self):
+        for noun, verbs in {"step": ("step build", "step snapshot"), "stl": ("stl build", "stl snapshot"),
+                            "srdf": ("srdf validate",), "dxf": ("dxf snapshot",)}.items():
+            for rest in (("bogus",), ()):
+                with self.subTest(noun=noun, rest=rest):
+                    code, out, err = self._dispatch(noun, *rest)
+                    self.assertEqual(2, code)
+                    self.assertEqual("", out)
+                    # The NOUN is right: it is never reported as the unknown thing.
+                    self.assertNotIn(f"unknown command {noun!r}", err)
+                    self.assertIn(f"usage: cadgen {noun} <verb>", err)
+                    for verb in verbs:
+                        self.assertIn(verb, err)
+                    self.assertNotIn("urdf validate" if noun != "urdf" else "sdf validate", err)
+
+    def test_a_formats_help_lists_its_verbs_and_exits_zero(self):
+        code, out, err = self._dispatch("glb", "--help")
+        self.assertEqual((0, ""), (code, err))
+        self.assertIn("glb build", out)
+        self.assertIn("glb snapshot", out)
+        self.assertNotIn("stl build", out)
+
+    def test_an_unknown_noun_lists_every_command(self):
+        code, out, err = self._dispatch("frobnicate", "build")
+        self.assertEqual(2, code)
+        self.assertIn("unknown command 'frobnicate'", err)
+        for command in ("step build", "stl build", "snapshot", "viewer"):
+            self.assertIn(command, err)
+
+    def test_the_summaries_say_what_the_doors_do(self):
+        # A mesh door tessellates a DOCUMENT; it reads no model declaration. And
+        # `step build` names everything it can annotate, not only kinematics.
+        _, out, _ = self._dispatch("--help")
+        self.assertNotIn("model's", out)
+        for summary in (
+            "write an STL mesh of a STEP document",
+            "write a 3MF mesh of a STEP document",
+            "write a GLB mesh of a STEP document",
+        ):
+            self.assertIn(summary, out)
+        line = next(text for text in out.splitlines() if text.strip().startswith("step build"))
+        for word in ("kinematics", "materials", "animation"):
+            self.assertIn(word, line)
 
     def test_a_name_that_is_not_a_door_raises_the_plain_attribute_error(self):
         # No retired-surface recognition: `cadgen.dxf` has no `build` door, and

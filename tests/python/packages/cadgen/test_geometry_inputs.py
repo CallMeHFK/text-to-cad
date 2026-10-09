@@ -182,7 +182,7 @@ class GeometryInputs(unittest.TestCase):
         self.assertGreater(materialize(digest).volume,0)
 
     def test_unknown_producer_cannot_share_persistent_namespace(self):
-        with mock.patch('cadgen._internal.op_memo._runtime_versions',return_value=('1','unknown','1')):
+        with mock.patch('cadgen.store.surfaces.kernel_versions',return_value=('1','unknown','1')):
             digest,tree=publish_document(self.scene())
             self.assertGreater(materialize(digest).volume,0)
             with self.assertRaises(ValueError):surfaces.derive(digest)
@@ -198,7 +198,7 @@ class GeometryInputs(unittest.TestCase):
     def test_geometry_identity_does_not_depend_on_surface_producer(self):
         scene=self.scene()
         first_hash,first=publish_document(scene)
-        with mock.patch('cadgen._internal.op_memo._runtime_versions',return_value=('different','different','different')):
+        with mock.patch('cadgen.store.surfaces.kernel_versions',return_value=('different','different','different')):
             second_hash,second=publish_document(scene)
             changed=surfaces.request_view(first_hash)
         normal=surfaces.request_view(first_hash)
@@ -280,7 +280,7 @@ class GeometryInputs(unittest.TestCase):
         from cadgen.store import index
         original=index.read_entry
         def read(kind,key):
-            if kind in {'model','output','op','component','document'}:
+            if kind in {'model','output','component','document'}:
                 raise AssertionError(f'forbidden index {kind}')
             return original(kind,key)
         with mock.patch.object(index,'read_entry',read),mock.patch.object(surfaces,'read_entry',read):
@@ -296,7 +296,7 @@ class GeometryInputs(unittest.TestCase):
             self.assertEqual(json.loads(out),json.loads(json.dumps(expected)))
         self.assertEqual(surfaces.derive(digest),expected)
 
-    def point_box(self,parameter):
+    def point_box(self,parameter,location=None):
         from build123d import Solid
         from OCP.BRep import BRep_PointOnCurve,BRep_Tool
         from OCP.Geom import Geom_Line
@@ -311,9 +311,24 @@ class GeometryInputs(unittest.TestCase):
         vertex=next(TopoDS.Vertex_s(mapping.FindKey(i)) for i in range(1,mapping.Extent()+1)
                     if BRep_Tool.Pnt_s(TopoDS.Vertex_s(mapping.FindKey(i))).Coord()==(0.,0.,0.))
         curve=Geom_Line(gp_Ax1(gp_Pnt(-parameter,0,0),gp_Dir(1,0,0)))
-        vertex.TShape().ChangePoints().Append(BRep_PointOnCurve(parameter,curve,TopLoc_Location()))
+        vertex.TShape().ChangePoints().Append(
+            BRep_PointOnCurve(parameter,curve,TopLoc_Location() if location is None else location))
         shape.cad_face_ordinal_colors={i:(i/7.,.2,.3,1.) for i in range(1,7)}
         return shape
+
+    def test_point_record_placements_compare_as_numbers(self):
+        # A decoder recomposes a location chain, and the product can carry
+        # -0.0 where the live shape had 0.0 (the w16 sump pan). Same number,
+        # same placement: that must not demote an authored part to eager-only.
+        from OCP.TopLoc import TopLoc_Location
+        from OCP.gp import gp_Trsf
+
+        def signature(zero,shift=0.):
+            trsf=gp_Trsf();trsf.SetValues(1.,zero,0.,shift, 0.,0.,-1.,0., 0.,1.,0.,0.)
+            return cp._point_signature(self.point_box(.5,TopLoc_Location(trsf)))
+
+        self.assertEqual(signature(-0.),signature(0.))
+        self.assertNotEqual(signature(0.),signature(0.,shift=1e-12))
 
     def test_actual_binary_throw_and_silent_loss_use_faithful_v3_artifacts(self):
         from cadgen._internal.component_package import _shape_brep_bytes

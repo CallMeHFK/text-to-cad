@@ -1,7 +1,9 @@
 "use client";
 
+import { Menu } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import {
@@ -9,6 +11,14 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
+
+const NAV_SECTIONS = [
+  { id: "overview", label: "Overview" },
+  { id: "install", label: "Install" },
+  { id: "skills", label: "Skills" },
+  { id: "contributing", label: "Contributing" },
+] as const;
 
 const GITHUB_REPO_URL = "https://github.com/earthtojake/text-to-cad";
 
@@ -51,29 +61,159 @@ function VersionLink({ version }: { version: string }) {
     return null;
   }
 
+  // Shown as the release is tagged: v0.7.14 for the 0.7.14 the release stamps.
+  const label = `v${normalizedVersion}`;
+
+  // A phone's header needs 349px for it beside the CAD logo and the burger, so it shows from 360px,
+  // the logo in or not. Between the phone and desktop layouts it stays out, as before.
   return (
     <a
-      className="hidden px-2.5 py-1.5 text-ui text-muted-foreground transition hover:bg-secondary hover:text-foreground md:inline-flex"
+      className="hidden rounded-md px-2.5 py-1.5 text-ui text-muted-foreground transition hover:bg-secondary hover:text-foreground min-[360px]:inline-flex sm:hidden md:inline-flex"
       href={`${GITHUB_REPO_URL}/releases`}
       target="_blank"
       rel="noreferrer"
-      aria-label={`Open GitHub releases for version ${normalizedVersion}`}
-      title={`Open GitHub releases for version ${normalizedVersion}`}
+      aria-label={`Open GitHub releases for ${label}`}
+      title={`Open GitHub releases for ${label}`}
     >
-      {normalizedVersion}
+      {label}
     </a>
   );
 }
 
+/** A phone's section links: a burger that drops them down under the header. A disclosure, not an
+ * application menu, so each section stays a plain link in the tab order after the button. Escape,
+ * a click outside, focus moving on past it, or choosing a section closes it. */
+function SectionMenu({ activeSection }: { activeSection: string }) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnPointerOutside = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      buttonRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", closeOnPointerOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointerOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  return (
+    <nav
+      ref={menuRef}
+      aria-label="Primary"
+      className="relative flex items-center self-stretch sm:hidden"
+      onBlur={(event) => {
+        // Focus moved on to something past the menu. Focus lost to nothing -- a tap that focuses
+        // nothing, or leaving the window -- is not the reader moving on; a tap outside closes it.
+        if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) {
+          setOpen(false);
+        }
+      }}
+    >
+      <Button
+        ref={buttonRef}
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="text-muted-foreground hover:text-foreground"
+        aria-label="Sections"
+        aria-expanded={open}
+        aria-controls="section-menu"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <Menu className="size-4" />
+      </Button>
+      <div
+        id="section-menu"
+        hidden={!open}
+        className="absolute top-full left-0 z-50 mt-1 flex min-w-40 origin-top-left flex-col rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md animate-in fade-in-0 zoom-in-95 slide-in-from-top-2 motion-reduce:animate-none"
+      >
+        {NAV_SECTIONS.map(({ id, label }) => (
+          <a
+            key={id}
+            href={`/#${id}`}
+            aria-current={activeSection === id ? "location" : undefined}
+            onClick={() => setOpen(false)}
+            className={`rounded-md px-2.5 py-2 text-ui transition hover:bg-secondary hover:text-foreground ${activeSection === id ? "text-foreground" : "text-muted-foreground"}`}
+          >
+            {label}
+          </a>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
 export function SiteHeaderClient({
+  heroWordmark,
   githubStars,
   discordUrl,
   version,
 }: {
+  heroWordmark: boolean;
   githubStars: number | null;
   discordUrl: string;
   version: string;
 }) {
+  const [activeSection, setActiveSection] = useState<string>(NAV_SECTIONS[0].id);
+  // The hero's wordmark in sight (below this header). Once it is out of sight -- scrolled away, or a
+  // page without one -- the CAD logo slides into the header's corner, pushing the section links (a
+  // phone's section menu) right: the brand still in view, and a way back home.
+  const [wordmarkInSight, setWordmarkInSight] = useState(heroWordmark);
+
+  useEffect(() => {
+    const wordmark = heroWordmark ? document.getElementById("hero-wordmark") : null;
+    if (!wordmark) return;
+    const observer = new IntersectionObserver(([entry]) => setWordmarkInSight(entry.isIntersecting), {
+      rootMargin: "-56px 0px 0px 0px", // this sticky header's height: under it is out of sight
+    });
+    observer.observe(wordmark);
+    return () => observer.disconnect();
+  }, [heroWordmark]);
+
+  useEffect(() => {
+    let frame = 0;
+    const updateActiveSection = () => {
+      frame = 0;
+      const sections = NAV_SECTIONS.map(({ id }) => document.getElementById(id));
+      if (!sections.some(Boolean)) {
+        setActiveSection("");
+        return;
+      }
+      let active: string = NAV_SECTIONS[0].id;
+      for (const section of sections) {
+        if (section && section.getBoundingClientRect().top <= 96) {
+          active = section.id;
+        }
+      }
+      // The final section may not be tall enough to reach the header.
+      if (window.scrollY > 0 && window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) {
+        active = NAV_SECTIONS[NAV_SECTIONS.length - 1].id;
+      }
+      setActiveSection(active);
+    };
+    const scheduleUpdate = () => {
+      if (!frame) frame = window.requestAnimationFrame(updateActiveSection);
+    };
+    updateActiveSection();
+    window.addEventListener("scroll", scheduleUpdate, { passive: true });
+    window.addEventListener("resize", scheduleUpdate);
+    return () => {
+      window.removeEventListener("scroll", scheduleUpdate);
+      window.removeEventListener("resize", scheduleUpdate);
+      window.cancelAnimationFrame(frame);
+    };
+  }, []);
+
   const githubLabel =
     githubStars === null
       ? "Open text-to-cad on GitHub"
@@ -82,53 +222,54 @@ export function SiteHeaderClient({
         )} stars`;
 
   return (
-    <header className="sticky top-0 z-40 h-14 shrink-0 overflow-hidden border-b border-border bg-background">
+    // Clipped across, never down: a phone's section menu drops below the header.
+    <header className="sticky top-0 z-40 h-14 shrink-0 overflow-x-clip border-b border-border bg-background">
       <div className="mx-auto flex h-full w-full max-w-[1200px] items-center gap-3 px-4 sm:px-6">
         <Link
           href="/"
-          className="flex min-w-0 items-center gap-2 text-foreground transition hover:text-primary"
+          aria-label="text-to-cad home"
+          className={cn(
+            "flex w-[46px] shrink-0 items-center overflow-hidden transition-[width,margin,opacity,visibility] duration-300 ease-out",
+            // Out of the row while the wordmark shows: no width, the row's gap taken back, and out of
+            // the tab order.
+            wordmarkInSight && "invisible -mr-3 w-0 opacity-0"
+          )}
         >
           <Image
-            src="/favicon.png?v=mesh-blue"
+            src="/brand/logo-cad.svg"
             alt=""
-            width={22}
+            width={52}
             height={22}
-            priority
             unoptimized
-            className="size-[22px] shrink-0"
+            className="h-[22px] w-auto shrink-0"
           />
-          <span className="min-w-0 truncate text-sm font-medium">
-            text-to-cad
-          </span>
         </Link>
-
         <nav
           aria-label="Primary"
-          className="ml-auto hidden items-center gap-1 sm:flex"
+          className="hidden items-center gap-1 sm:flex"
         >
-          <a
-            className="px-2.5 py-1.5 text-ui text-muted-foreground transition hover:bg-secondary hover:text-foreground"
-            href="#skills"
-          >
-            SKILLS
-          </a>
-          <a
-            className="px-2.5 py-1.5 text-ui text-muted-foreground transition hover:bg-secondary hover:text-foreground"
-            href="#installation"
-          >
-            INSTALL
-          </a>
-          <VersionLink version={version} />
+          {NAV_SECTIONS.map(({ id, label }) => (
+            <a
+              key={id}
+              href={`/#${id}`}
+              aria-current={activeSection === id ? "location" : undefined}
+              className={`rounded-md px-2.5 py-1.5 text-ui transition hover:bg-secondary hover:text-foreground ${activeSection === id ? "text-foreground" : "text-muted-foreground"}`}
+            >
+              {label}
+            </a>
+          ))}
         </nav>
+        <SectionMenu activeSection={activeSection} />
 
-        <div className="ml-auto flex shrink-0 items-center gap-1 sm:ml-0">
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          <VersionLink version={version} />
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
                 asChild
-                variant="outline"
+                variant="ghost"
                 size="icon"
-                className="card-glow h-8 w-8 border-border bg-card text-foreground hover:bg-secondary hover:text-primary"
+                className="text-muted-foreground hover:text-foreground"
               >
                 <a
                   href={discordUrl}
@@ -146,8 +287,8 @@ export function SiteHeaderClient({
             <TooltipTrigger asChild>
               <Button
                 asChild
-                variant="outline"
-                className="card-glow h-8 border-border bg-card px-2 text-foreground hover:bg-secondary hover:text-primary"
+                variant="ghost"
+                className="px-2 text-muted-foreground hover:text-foreground"
               >
                 <a
                   href={GITHUB_REPO_URL}
@@ -157,7 +298,7 @@ export function SiteHeaderClient({
                 >
                   <GitHubLogo className="size-3.5" />
                   {githubStars !== null ? (
-                    <span className="text-label font-medium tabular-nums tracking-wider">
+                    <span className="text-label font-medium tabular-nums">
                       {formatGitHubStars(githubStars)}
                     </span>
                   ) : null}

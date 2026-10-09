@@ -29,7 +29,6 @@ from cadgen import build123d as bd
 
 @step
 def widget():
-    import time; time.sleep({sleep})
     return bd.Box({size}, 8.0, 4.0)
 
 
@@ -114,20 +113,24 @@ class PublishRuleTest(unittest.TestCase):
     def _run(self, script: Path) -> dict:
         proc = self._start(script)
         out, err = proc.communicate(timeout=600)
-        self.assertEqual(proc.returncode, 0, err)
+        # Under --json the failure envelope is on STDOUT; stderr is only the build tree.
+        self.assertEqual(proc.returncode, 0, out + err)
         return json.loads(out.strip().splitlines()[-1]) | {"stderr": err}
 
     def test_two_builds_of_one_model_both_run_and_the_disk_ends_current(self):
+        # Both builds run the SAME source, started back to back so they publish the same
+        # record, entries and document at about the same moment: the byte-identical race
+        # STORE.md §7 calls idempotent. (Each worker imports the script when it gets there,
+        # so an edit between the starts would not reliably give the first an older source;
+        # the stale-build rejection is decide()'s, pinned in test_store.)
         script = self.root / "widget.py"
-        script.write_text(PART.format(sleep=2.0, size=10.0), encoding="utf-8")
+        script.write_text(PART.format(size=11.0), encoding="utf-8")
         first = self._start(script)
-        time.sleep(0.5)  # the first is importing or in its body; a NEWER source lands now
-        script.write_text(PART.format(sleep=0.0, size=11.0), encoding="utf-8")
         second = self._start(script)
         outputs = []
         for proc in (first, second):
             out, err = proc.communicate(timeout=600)
-            self.assertEqual(proc.returncode, 0, err)
+            self.assertEqual(proc.returncode, 0, out + err)
             outputs.append(json.loads(out.strip().splitlines()[-1])["outcome"])
         self.assertTrue(all(o in {"built", "skipped-peer"} for o in outputs), outputs)
         self.assertIn("built", outputs)
@@ -137,6 +140,32 @@ class PublishRuleTest(unittest.TestCase):
         from cadgen.store.gate import stale
 
         self.assertFalse(stale(script).stale)
+
+    def test_reading_back_a_step_a_peer_is_replacing_waits_it_out(self):
+        # The race above, pinned without a second process: Windows refuses an open of a
+        # file another build is renaming over with EACCES and no winerror, and the
+        # publish's read-back of the .step must wait that out rather than fail the save.
+        import errno
+        import hashlib
+
+        from cadgen._internal import atomic_replace, generation
+
+        step = self.root / "widget.step"
+        step.write_bytes(b"ISO-10303-21;\n")
+        real_open = Path.open
+        refused = []
+
+        def peer_renaming(path, mode="r", *args, **kwargs):
+            if Path(path) == step and not refused:
+                refused.append(path)
+                raise PermissionError(errno.EACCES, "Permission denied")
+            return real_open(path, mode, *args, **kwargs)
+
+        with mock.patch.object(atomic_replace, "_OPEN_REFUSAL_IS_ERRNO_ONLY", True), \
+                mock.patch.object(Path, "open", peer_renaming), mock.patch("time.sleep"):
+            digest, _sidecar = generation._document_pair_state(step)
+        self.assertTrue(refused)
+        self.assertEqual(hashlib.sha256(b"ISO-10303-21;\n").hexdigest(), digest)
 
     def test_a_child_edited_mid_parent_build_leaves_the_parent_flagged_stale(self):
         leaf = self.root / "leaf.py"
@@ -159,7 +188,7 @@ class PublishRuleTest(unittest.TestCase):
         self._run(leaf)
         (self.root / "go").write_text("", encoding="utf-8")
         out, err = running.communicate(timeout=600)
-        self.assertEqual(running.returncode, 0, err)
+        self.assertEqual(running.returncode, 0, out + err)
         result = json.loads(out.strip().splitlines()[-1])
         self.assertEqual(result["outcome"], "built")
         transitions = [json.loads(line) for line in err.splitlines() if line.startswith("{")]

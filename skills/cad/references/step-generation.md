@@ -166,34 +166,6 @@ deliberately:
   decouple (export it once, then treat the export like any other document).
   Read it with `cadgen.read_step`, below.
 
-### Memoizing expensive geometry helpers
-
-`from cadgen import memo` adds an optional `@memo` to a parameterized
-geometry helper. The model still takes no arguments and declares all files;
-the helper returns a shape and creates no files. Use it for expensive repeated
-booleans or builders, returning an ordinary `Solid` or a builder's `.part`.
-Place reusable factories in a helper module so changing the parent's placement
-or configuration leaves their source unchanged. Keys include each helper's
-whole captured source file, so editing another function in that file also
-invalidates it.
-
-The decorator declares a **pure function under an unmodified CAD/math runtime**:
-geometry depends only on immutable arguments, defaults, globals and deterministic
-helpers. No I/O, random/time/environment inputs, progress reporting, child model
-calls, callbacks, identity-dependent logic or dependency monkeypatches. This is
-an author precondition, not an automatically proven Python sandbox. Supported
-finite scalars/tuples and a bounded CAD/math vocabulary can reuse results;
-unsupported code, mutable inputs and calls within an already-open builder keep
-ordinary execution. Cheap primitives often cost less to execute than to verify
-and reconstruct, so do not decorate every function.
-
-Normal warm workers and transient child workers support reuse. Generic embedded
-calls execute the body. Eligible misses, hits and `CADGEN_MEMO_CACHE=0` use
-the same private canonical return codec; native handle identity is not an input
-or an output contract. Missing objects recover by running the factory. No
-additional caching, ownership or invalidation helpers belong in authored code.
-`MEMO.md` in the installed cadgen package specifies the complete contract.
-
 ### Children
 
 A child is just an import: model scripts are real modules, and
@@ -251,25 +223,35 @@ the assemblies that use it** — run the parent to pick up the change
 rest). A parent finished against a child that changed during its build says so
 (`already stale: … rerun`).
 
-### What a rebuild tracks — models by result, constants by value, functions by file
+### What a rebuild tracks — models by result, constants by value, functions by reach
 
 What an importer TAKES from a model file decides how that file counts:
 
-- **`from widget import widget`** (the model function) → tracked by RESULT:
-  the parent pins the child's tree; `widget.py` is not in the parent's source.
+- **`from widget import widget`** (the model function), called → tracked by
+  RESULT: the parent pins the child's tree, so an edit inside `widget()`'s body
+  rebuilds the parent only when the child's geometry changes. Importing
+  `widget.py` still runs its top level in the parent's process — its imports,
+  module-level code and any decorator argument that is not a literal — so an
+  edit there rebuilds the parent too (a literal such as `out="..."` does not).
+  Keep a model file's top level to imports, constants and definitions.
 - **`from widget import WIDTH`** (a module-level literal: a number, string,
   bool, `None`, or tuples/lists/dicts of those) → tracked by VALUE: a
   comment or body edit in `widget.py` leaves the importer current; only a
-  changed value rebuilds it.
+  changed value rebuilds it. A value computed by module-level code is
+  import-time code: editing that expression rebuilds the importer too.
 - **Anything else** from a model file (a helper function, a `bd.` object, an
   expression) → tracked by FILE: the whole file joins the importer's source
   closure, and any edit to it rebuilds the importer. Shared helpers therefore
   belong in `lib/` (a plain module, in the closure of every model that
-  reaches it), and shared constants may live in a model file or in `lib/`.
+  reaches it — by the functions and constants the model can actually run, so
+  editing a helper no model calls rebuilds nothing), and shared constants may
+  live in a model file or in `lib/`.
 
-Inputs join the closure too: a `read_step` document is hashed as a build
-input, and so is any other data file the model declares with
-`cadgen.declare_input` (below). Embedded `animation=` source and named
+Inputs join the closure too: every data file the build opens is hashed as a
+build input, whatever opens it (below). A new
+file that changes what an import finds — an `__init__.py` added to a folder, a
+package beside a module, a same-named module earlier on the path — also makes
+the model stale. Embedded `animation=` source and named
 `materials=` are decorator annotations. Imported values and helper calls
 remain ordinary source dependencies.
 
@@ -277,9 +259,31 @@ Every decorator argument is ordinary Python, evaluated when the module is
 imported: `out=f"{FOLDER}/{NAME}.step"`, `mesh_tolerance=TOL` with `TOL` from
 `lib/`, a path built from a constant — all fine, and nothing is read off the
 source text. The values feeding them are tracked like any other input (a
-`lib/` module by file, a model-file constant by value), so changing the
+`lib/` helper by reach, a model-file constant by value), so changing the
 constant behind an `out=` makes the model stale. The module top must still stay
 kernel-free so checking the model's declarations stays cheap.
+
+### Splitting for rebuild speed
+
+cadgen never caches work inside a model: a model whose inputs changed runs
+from scratch, and one whose inputs did not is skipped whole. Rebuild speed
+therefore comes from how the project is split:
+
+- Give a part its own model when it dominates its model's build time, takes
+  more than about 15 s, or is edited independently of its neighbours: a thin
+  entry file whose `@step` function calls a factory in `lib/`, placed by its
+  parent like any child. An edit then rebuilds that part and relinks the
+  parent; its siblings stay current, and stale children build in parallel. One
+  heavy casing or shell inside a model of many light parts is the case that
+  pays most: edits to the light parts stop paying for it.
+- Keep geometry in `lib/` factories. A model reruns only when code it reaches
+  changes, so an edit to one factory leaves the models that never call it
+  current.
+- One entry file per expensive model: every `@step` function in a file is
+  stale when any line of that file changes.
+
+A part that builds in a second or two gains nothing from its own file; check
+timings with `--verbose` before splitting further.
 
 ### Annotation caching
 
@@ -309,8 +313,9 @@ still cached, and an unchanged parent remains a no-op.
 
 Use a separate model when the mirrored part needs independent outputs or reuse
 across assemblies or parent rebuilds. Its result can then be linked and placed
-like any other child. Eligible factory/operation caches may also reuse inline
-work; separate models add a model-level cache boundary, not basic cache safety.
+like any other child. A separate model is also the unit of reuse: cadgen
+never caches work inside a model, so an unchanged model is skipped whole and
+a changed one runs whole (see [Splitting for rebuild speed](#splitting-for-rebuild-speed)).
 
 For independently exported left/right variants, a shared factory is one option:
 
@@ -363,12 +368,10 @@ the project needs. Either can participate in the containing assembly's kinematic
 
 ### Inputs: reading a STEP file the model does not generate
 
-Use `cadgen.read_step`, not `build123d.import_step`. It returns the same
-native shape, reuses cached geometry when available, and records the file's
-content hash as a build input. Replacing the vendor STEP
-then makes the model stale on its own, with no `--force`; read through
-build123d and the model stays "current" against a file that changed
-underneath it.
+Prefer `cadgen.read_step` to `build123d.import_step`: it returns the same
+native shape with the document's colours, and reads warm from the store when it
+already holds the file's tree. Either way the file is a build input: replacing
+the vendor STEP makes the model stale on its own, with no `--force`.
 
 ```python
 from pathlib import Path
@@ -416,35 +419,20 @@ already builds, call that model instead of reading the artifact.
 
 ### Inputs: a data file the model reads
 
-`read_step` records the STEP it reads because cadgen reads it for you. For any
-other file a model reads — a JSON routing atlas, a CSV of tap sizes, a table of
-solved offsets — cadgen has no reader, so declare it with
-`cadgen.declare_input`. It returns the resolved path and puts the file's content
-hash in the model's closure; the model does its own parsing.
+Every file the build opens is recorded as it reads it, whatever reads it: a
+JSON routing atlas through `json.load`, a CSV of tap sizes, a table through
+`np.load`, a BREP `bd.import_brep` opens in C++, a project font `bd.Text` loads. Edit
+`atlas.json` and the model is stale on its own; rewrite it with identical bytes
+and it stays current, because the input is the content and not the mtime. A
+folder the model globs is recorded too, so adding or removing a profile there
+rebuilds it. The model's own outputs in that folder do not count; another
+model's do, so a model that globs the folder its siblings build into reads stale
+once after their first build. Nothing is declared.
 
-```python
-import json
-from pathlib import Path
-
-from cadgen import build123d as bd
-from cadgen import declare_input, step
-
-_HERE = Path(__file__).resolve().parent
-
-
-@step
-def plate():
-    atlas = json.loads(declare_input(_HERE / "atlas.json").read_text(encoding="utf-8"))
-    return bd.Box(atlas["width"], 20, 4)
-```
-
-Wrap the path, not the read, so there is no way to declare one file and read
-another. Edit `atlas.json` and the model is stale on its own; rewrite it with
-identical bytes and it stays current, because the input is the content and not
-the mtime. Without the declaration the model reports itself current forever
-after the data changes, and only `--force` gets the truth back. A missing file
-raises before the model's parser sees it. The rule about a model's own output
-applies here too: never declare a file the model writes.
+Not inputs: a file the build writes, the model's own outputs, the Python
+environment, and system files (fonts, time zones). A program the model starts
+as a separate process reads files on its own, unseen: keep that step outside
+the model and read its result.
 
 For structuring multi-part projects (folder layout, shared `src/lib/` code,
 commit policy), read `project-layout.md` and `project-template.md`.
@@ -463,8 +451,8 @@ python src/frame.py --force         # force this model's body to run
 ```
 
 The gate cannot track geometry selected by environment variables, the working
-directory, time or randomness. Put configurations in source/factory arguments
-and declare file inputs explicitly. After a runtime fix, force affected models
+directory, time or randomness. Put configurations in source/factory arguments;
+the files a model reads are tracked on their own. After a runtime fix, force affected models
 if their cached results still reflect the old behavior.
 
 ## Generated assemblies
@@ -514,6 +502,12 @@ cadgen step build vendor/hinge.step STEP/hinge.step \
 
 Re-running is a no-op; editing only these annotations refreshes the sidecar
 without re-emitting a byte. Vendor metadata (PMI, GD&T) does not survive the round trip.
+OUT's root is named after OUT: the root `PRODUCT` and the header's `FILE_NAME`
+take OUT's file stem (`STEP/hinge.step` → `hinge`), exactly as a model script's
+document is named after the file it writes — so the same input re-emitted to two
+paths yields two differently named documents. Names below the root are kept, so
+`#label` references to the parts keep resolving; do not address the root by the
+name IN carried.
 **Choose the door by how the model will evolve**: a shape you will keep changing
 belongs in a model script (a thin wrapper that reads the foreign STEP), while
 a one-shot canonicalization or annotation of a file you do not own is exactly
@@ -553,6 +547,11 @@ same geometry/output contract.
 
 Results go to stdout; progress and errors go to stderr. Model runs accept
 `--json` for machine-readable results and `--verbose` for timings/full tracebacks.
+A `--json` result names its `document` by absolute path, and a `--json` failure
+is one `{"ok": false, "error": "..."}` line on stdout with exit status 1 — the
+same envelope every `cadgen` command prints. `python part.py --help` lists the
+per-run flags. A script builds the models its `__main__` block calls; no flag
+selects one.
 For long model bodies, optional `report` and `track` calls expose progress:
 
 ```python
@@ -568,4 +567,6 @@ Use one cache store for normal project work. A separate `CADGEN_CACHE_DIR`
 is useful for isolated tests, but two stores writing the same project outputs
 can cause repeated freshness misses. The store holds derived results only.
 Prefer a targeted `--force` or `cadgen store forget <model>.py` when diagnosing
-one stale result; `cadgen store gc` removes unreachable cache data.
+one stale result; `cadgen store gc` removes unreachable cache data. The store
+keeps itself under `CADGEN_STORE_MAX` (default 20 GB) by evicting its least
+recently written derived entries; `cadgen store info` shows its size.

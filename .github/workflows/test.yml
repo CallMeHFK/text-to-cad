@@ -1,49 +1,34 @@
-# The repo's test workflow: one job per thing that has to work, each conditional on
-# the changes that can break it. No gates, no shards. A job skipped by its own
-# condition satisfies its required check, so a prose-only pull request runs Version
-# Check and nothing else.
+# One job per concern. What a change can break decides what runs:
+# scripts/github-workflows/select_checks.py maps every changed path through an explicit
+# table of the tests that read it, and each job below runs on its own flag. Skill prose
+# runs the tests that read that prose; a cadgen module runs cadgen's suites and the hosts
+# that load it; a test file runs itself. A path the table does not know runs everything,
+# and so does a manual run or a VERSION change -- a release is tested whole.
 #
-# WHAT CAN BREAK WHAT (the dependency graph the conditions encode)
-#   packages/cadgen     the Python engine, CLI doors, daemon and the CAD Viewer BACKEND.
-#                       Everything downstream runs it: the skills (thin entrypoints over
-#                       its CLIs), the viewer (served by cadgen.viewer), the docs site
-#                       (documents its commands), the wheel.
-#   packages/cadgen-js  bundled into the runtime cadgen executes (mesh exports,
-#                       snapshots), imported by the viewer client, and by the docs hero.
-#   apps/viewer         the client. Platform-agnostic JS; served by the backend.
-#   skills/             SKILL.md + scripts. Their suites run the cadgen CLIs; the docs
-#                       site mirrors their frontmatter.
-#   apps/docs           the docs site.
-#   scripts/, .github/, version metadata ("infra"): can break any job.
-#   Root *.md, notes/, models/, LICENSE ("prose"): read by no test. Markdown under
-#   skills/ and packages/cadgen/ is NOT prose -- test_documented_commands,
-#   test_skill_requirements and test_package_boundaries read it.
+# Every run records the tree it tested (an artifact named tested-<tree>-<scope>). A push
+# whose tree its pull request already tested with the same selection runs nothing again,
+# and Publish Release ships a release commit without re-testing it when a run here tested
+# its tree in full (scripts/github-workflows/tested_tree.py). Publish Release also calls
+# this workflow with `full` when it finds no such run.
 #
-# WHAT RUNS WHERE
-#   Version Check     ubuntu   always: VERSION, derived metadata, skill pins
-#   cadgen (Linux)    ubuntu   the cadgen package suite, viewer backend included
-#   cadgen (Windows)  windows  the SAME suite. This is the one thing that must be
-#                              proven on Windows: paths, locks, subprocesses, file
-#                              URLs, the daemon, the viewer backend. Nothing else
-#                              runs there -- bundling, packaging, policy and the JS
-#                              suites are properties of the tree or of a browser,
-#                              not of an operating system.
-#   cadgen-js         ubuntu   cadgen-js unit tests (+ the viewer-memory bench helpers)
-#   viewer            ubuntu   the client's unit tests, then the bundled client
-#                              launched through the real backend
-#   skills            ubuntu   the policy gates (tests/python/global) + every skill suite
-#   docs              ubuntu   the docs site check
-#   packaging         ubuntu   bundle from clean, published-tree contract, wheel
-#                              package data, the CLIs pip-installed outside the repo
-#
-# Each job parallelises internally (unittest_files.py --jobs, node --test concurrency).
-# The packaged runtime is gitignored and built by whichever job needs it
-# (scripts/test/common.sh ensure_packaged_runtime, ~13 s).
-#
+# Check names are the jobs' concerns: `core-js` tests packages/core, `web` tests
+# packages/ui and apps/web and drives the bundled viewer, `mcp` tests apps/mcp, `api` tests
+# apps/api. main requires Version Check, cadgen (Linux), cadgen (Windows), core-js, web,
+# skills, docs and packaging; not `mcp` or `api`.
 name: Test
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      full:
+        description: Run every job, whatever changed.
+        type: boolean
+        default: false
+      ref:
+        description: The commit to test; the caller's commit when empty.
+        type: string
+        default: ""
   pull_request:
     branches:
       - main
@@ -53,68 +38,92 @@ on:
       - main
       - build-test
 
+# github.workflow is the CALLER's name when Publish Release calls this, so its run never
+# queues behind -- or cancels -- this workflow's own runs on the same branch.
 concurrency:
-  group: test-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # What changed, as the classes above. Every other job's `if:` reads these.
+  # Each job's timeout is about twice its slowest recent run. A job that runs Python
+  # test files also leaves room for unittest_files.py's per-file hang guard (15 min)
+  # to fire first and name the file. A hang fails in minutes, not at GitHub's
+  # six-hour default.
+  #
+  # What the change can break, as flags and test paths. Every other job reads these.
   changes:
     name: Changed paths
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # A push looks up the run that already tested its tree (tested_tree.py).
+      actions: read
     outputs:
-      cadgen: ${{ steps.filter.outputs.cadgen }}
-      cadgenjs: ${{ steps.filter.outputs.cadgenjs }}
-      viewer: ${{ steps.filter.outputs.viewer }}
-      skills: ${{ steps.filter.outputs.skills }}
-      docs: ${{ steps.filter.outputs.docs }}
-      infra: ${{ steps.filter.outputs.infra }}
+      cadgen: ${{ steps.select.outputs.cadgen }}
+      cadgen_tests: ${{ steps.select.outputs.cadgen_tests }}
+      core_js: ${{ steps.select.outputs.core_js }}
+      web: ${{ steps.select.outputs.web }}
+      web_ui: ${{ steps.select.outputs.web_ui }}
+      web_client: ${{ steps.select.outputs.web_client }}
+      web_viewer: ${{ steps.select.outputs.web_viewer }}
+      mcp: ${{ steps.select.outputs.mcp }}
+      api: ${{ steps.select.outputs.api }}
+      skills: ${{ steps.select.outputs.skills }}
+      light_policy: ${{ steps.select.outputs.light_policy }}
+      light_tests: ${{ steps.select.outputs.light_tests }}
+      skills_policy: ${{ steps.select.outputs.skills_policy }}
+      skills_tests: ${{ steps.select.outputs.skills_tests }}
+      skills_runtime: ${{ steps.select.outputs.skills_runtime }}
+      docs: ${{ steps.select.outputs.docs }}
+      packaging: ${{ steps.select.outputs.packaging }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
-
-      - uses: dorny/paths-filter@v4
-        id: filter
         with:
-          filters: |
-            cadgen:
-              - 'packages/cadgen/**'
-              - 'tests/python/packages/**'
-              - 'tests/python/support/**'
-              - 'requirements*.txt'
-            cadgenjs:
-              - 'packages/cadgen-js/**'
-            viewer:
-              - 'apps/viewer/**'
-              - 'tests/browser/**'
-            skills:
-              - 'skills/**'
-              - 'tests/python/skills/**'
-              - 'tests/python/global/**'
-            docs:
-              - 'apps/docs/**'
-            infra:
-              - 'scripts/**'
-              - '.github/**'
-              - 'VERSION'
-              - '.claude-plugin/**'
-              - '.codex-plugin/**'
-              - '.qwenpaw-plugin/**'
-              - '.zcode-plugin/**'
-              - 'package.json'
-              - 'package-lock.json'
-              - '.gitattributes'
-              - '.gitignore'
+          ref: ${{ inputs.ref }}
+          # The commit and its parents: a pull request's merge commit is diffed against its
+          # first parent, the target branch as it is now; a push fetches `before` itself.
+          fetch-depth: 2
+          persist-credentials: false
 
+      - name: Select what this change can break
+        id: select
+        env:
+          FULL: ${{ github.event_name == 'workflow_dispatch' || inputs.full }}
+          # Only a push diffs against `before`; a pull request's synchronize event carries one too.
+          BEFORE: ${{ github.event_name == 'push' && github.event.before || '' }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/github-workflows/select_checks.py
+
+      # A record only saves running the tests again, so failing to upload one fails nothing: the
+      # tests still run here, and the push and Publish Release, finding no record, test again.
+      - name: Record the tree this run tests
+        if: steps.select.outputs.record != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.select.outputs.record }}
+          path: ${{ runner.temp }}/selection.json
+          retention-days: 90
+          overwrite: true
+
+  # Every change, selected or not: the canonical version, the derived metadata and the
+  # cadgen pins, and the tracked tree's rules -- and on a pull request, what merging it
+  # releases. A pull request that changes VERSION is a release: merging it starts Publish
+  # Release. Only a branch of this repository may carry one, and only to a version past the
+  # target branch's and the latest tag (scripts/release/check-pr-version.sh).
   version:
     name: Version Check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
-          # The VERSION guard below diffs against the PR base.
+          ref: ${{ inputs.ref }}
+          # The release guard reads the target branch's history and the release tags.
           fetch-depth: 0
 
       - name: Set up Node.js
@@ -127,37 +136,26 @@ jobs:
           scripts/release/check-version.sh
           node scripts/release/sync-version.mjs --check
 
-      # Only a release PR moves VERSION. Prepare Release opens those from `release/X.Y.Z`
-      # and stamps the metadata and the skill pins with the same commit; a hand-made bump
-      # would ship a version whose pins, wheel and tag do not line up.
-      - name: Only release/* branches may change VERSION
+      - name: Check what merging releases
         if: github.event_name == 'pull_request'
         env:
-          HEAD_REF: ${{ github.head_ref }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- VERSION; then
-            echo "VERSION unchanged."
-            exit 0
-          fi
-          case "$HEAD_REF" in
-            release/*) echo "VERSION changed on $HEAD_REF (a release PR)." ;;
-            *)
-              echo "This PR changes VERSION but its branch is '$HEAD_REF', not release/*." >&2
-              echo "Version bumps come from the Prepare Release workflow:" >&2
-              echo "  gh workflow run release-prepare.yml --ref main -f bump=patch" >&2
-              exit 1
-              ;;
-          esac
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: scripts/release/check-pr-version.sh "$HEAD_REPO" | tee -a "$GITHUB_STEP_SUMMARY"
 
-  # The cadgen package suite, CAD Viewer backend included, on both platforms. cadgen-js
-  # is in the condition because it is bundled into the runtime these tests execute.
+      # The shipping contract's tree rules hold for every change, docs and models
+      # included, and need no runtime: no symlink, no LFS or other rewriting
+      # .gitattributes rule, every file under 5 MiB, no skill reaching into a repo root.
+      - name: Check the tracked tree
+        run: scripts/github-workflows/check-builds.sh --tree-only
+
+  # The cadgen package suite, CAD Viewer backend included, on both platforms -- or the
+  # files of it a change selected (a test edited, a document a test reads).
   cadgen-linux:
     name: cadgen (Linux)
     needs: changes
-    if: needs.changes.outputs.cadgen == 'true' || needs.changes.outputs.cadgenjs == 'true' || needs.changes.outputs.infra == 'true'
+    if: needs.changes.outputs.cadgen == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     env:
       # Test files at a time: each is a kernel-loading interpreter (~450 MB).
       CADGEN_TEST_JOBS: "4"
@@ -165,14 +163,21 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Set up dependencies
         uses: ./.github/actions/setup-deps
         with:
-          npm: packages/cadgen-js
+          npm: packages/core
 
       - name: Run the cadgen package suite
-        run: scripts/test/test-python.sh --select cadgen --print-weights
+        env:
+          TESTS: ${{ needs.changes.outputs.cadgen_tests }}
+        run: |
+          # TESTS is a space-separated list of repo paths: split on purpose.
+          # shellcheck disable=SC2086
+          scripts/test/test-python.sh --select cadgen --print-weights $TESTS
 
   # Why Windows runs at all: four of the last five user-reported bugs were Windows-only
   # (#260, #266, #267, #269) and every one passed CI -- the coverage existed, the runner
@@ -181,8 +186,9 @@ jobs:
   cadgen-windows:
     name: cadgen (Windows)
     needs: changes
-    if: needs.changes.outputs.cadgen == 'true' || needs.changes.outputs.cadgenjs == 'true' || needs.changes.outputs.infra == 'true'
+    if: needs.changes.outputs.cadgen == 'true'
     runs-on: windows-latest
+    timeout-minutes: 45
     env:
       # Four, the core count. Six was measured: every file slowed by ~40% and the
       # run failed on timeouts -- the spawn-bound tail is not idle CPU to fill.
@@ -191,111 +197,252 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Set up dependencies
         uses: ./.github/actions/setup-deps
         with:
-          npm: packages/cadgen-js
+          npm: packages/core
 
       # --keep-going: report every failing suite in one round trip rather than one per
       # run; the Linux job keeps the fail-fast default.
       - name: Run the cadgen package suite
-        run: scripts/test/test-python.sh --keep-going --select cadgen --print-weights
+        env:
+          TESTS: ${{ needs.changes.outputs.cadgen_tests }}
+        run: |
+          # shellcheck disable=SC2086
+          scripts/test/test-python.sh --keep-going --select cadgen --print-weights $TESTS
         shell: bash
 
-  cadgen-js:
-    name: cadgen-js
+  core-js:
+    name: core-js
     needs: changes
-    if: needs.changes.outputs.cadgenjs == 'true' || needs.changes.outputs.infra == 'true'
+    if: needs.changes.outputs.core_js == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Set up dependencies
         uses: ./.github/actions/setup-deps
         with:
           python: "false"
           playwright: "false"
-          npm: packages/cadgen-js
+          npm: packages/core
 
-      - name: Run cadgen-js tests
-        run: npm --prefix packages/cadgen-js test
+      - name: Run shared core tests
+        run: scripts/test/test-js.sh --select core
 
-      - name: Run the viewer-memory bench helper tests
-        run: node --test scripts/bench/viewer-memory/*.test.mjs
 
-  # The client is platform-agnostic JS, so Linux only. It runs on a cadgen change too:
-  # the launch step serves the bundled client through the real backend and draws it in
-  # Playwright's Chromium, which is why this job keeps the Playwright install.
-  viewer:
-    name: viewer
+  # The client is platform-agnostic JS, so Linux only. The viewer steps serve the bundled
+  # client through the real backend and draw it in Playwright's Chromium, which is why a
+  # cadgen change runs them too, and why this job installs Python only for them.
+  web:
+    name: web
     needs: changes
-    if: needs.changes.outputs.viewer == 'true' || needs.changes.outputs.cadgenjs == 'true' || needs.changes.outputs.cadgen == 'true' || needs.changes.outputs.infra == 'true'
+    if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Set up dependencies
         uses: ./.github/actions/setup-deps
         with:
-          npm: packages/cadgen-js apps/viewer
+          # The launch smoke test drives Python Playwright's Chromium; the browser gates and
+          # the UI specs drive npm Playwright's.
+          python: ${{ needs.changes.outputs.web_viewer }}
+          playwright: ${{ needs.changes.outputs.web_viewer }}
+          npm: packages/core packages/ui apps/web apps/mcp
+          ui-browser: "true"
+
+      - name: Run shared UI tests
+        if: needs.changes.outputs.web_ui == 'true'
+        # One browser spec at a time: each renders WebGL in software here (SwiftShader), and
+        # several at once saturate the runner's four cores until clicks time out.
+        env:
+          UI_BROWSER_TEST_CONCURRENCY: "1"
+        run: scripts/test/test-js.sh --select ui
 
       - name: Run the CAD Viewer client tests
-        run: npm --prefix apps/viewer run test
+        if: needs.changes.outputs.web_client == 'true'
+        run: scripts/test/test-js.sh --select web
 
       - name: Bundle production outputs
+        if: needs.changes.outputs.web_viewer == 'true'
         run: scripts/bundle/bundle.sh
 
       - name: Launch the bundled CAD Viewer through the backend
+        if: needs.changes.outputs.web_viewer == 'true'
         run: scripts/test/test-viewer-launch.sh
 
-  # The policy gates read the repo's markdown and manifests; the skill suites run the
-  # cadgen CLIs. Repository properties, so Linux only.
+      - name: Exercise the bundled viewer in Chromium
+        if: needs.changes.outputs.web_viewer == 'true'
+        env:
+          VIEWER_TEST_DIAGNOSTICS_DIR: ${{ runner.temp }}/viewer-browser
+        run: scripts/test/test-viewer-browser.sh
+
+      - name: Upload failed viewer diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: viewer-browser-diagnostics
+          path: ${{ runner.temp }}/viewer-browser
+          if-no-files-found: ignore
+          retention-days: 3
+
+  # The CAD app an agent host renders: its host adapter's units in jsdom, and the one-file
+  # build it ships as (a build that would leave anything outside index.html fails).
+  mcp:
+    name: mcp
+    needs: changes
+    if: needs.changes.outputs.mcp == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Set up dependencies
+        uses: ./.github/actions/setup-deps
+        with:
+          python: "false"
+          npm: packages/core packages/ui apps/mcp
+
+      - name: Run the CAD app tests and build it
+        run: scripts/test/test-js.sh --select mcp
+
+  # api.texttocad.dev (apps/api): the version feed's and the telemetry receiver's tests. It has no
+  # dependencies, so Node is all it installs.
+  api:
+    name: api
+    needs: changes
+    if: needs.changes.outputs.api == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Run the API tests
+        run: scripts/test/test-api.sh
+
+  # The repository's policy gates and the skills' own suites, in two phases. The light
+  # contracts -- policy and skill tests that read only the repository's text -- run on every
+  # change, first, with nothing but Python and Node installed: one that needs more fails
+  # here, whatever else the change selected. Then, only when the change reaches them, the
+  # policy tests and skill suites that load the CAD kernel or the built runtime, after the
+  # full install. Repository properties, so Linux only.
+  # Required, and selected for every change -- so it also stands guard over the selection. If
+  # Changed paths fails, every job it gates is skipped, and GitHub counts a skipped required
+  # check as passing: this one runs then, and fails, so nothing merges untested.
   skills:
     name: skills
     needs: changes
-    if: needs.changes.outputs.skills == 'true' || needs.changes.outputs.cadgen == 'true' || needs.changes.outputs.cadgenjs == 'true' || needs.changes.outputs.infra == 'true'
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.skills == 'true') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       CADGEN_TEST_JOBS: "4"
 
     steps:
+      - name: Stop when the selection did not run
+        if: needs.changes.result != 'success'
+        run: |
+          echo "Changed paths did not finish, so nothing was selected and no test ran. Re-run the workflow." >&2
+          exit 1
+
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Run the light contracts
+        env:
+          PYTHON_TEST_RUNTIME: "0"
+          POLICY: ${{ needs.changes.outputs.light_policy }}
+          TESTS: ${{ needs.changes.outputs.light_tests }}
+        run: |
+          # Space-separated lists of repo paths: split on purpose.
+          # shellcheck disable=SC2086
+          scripts/test/test-global.sh $POLICY
+          # shellcheck disable=SC2086
+          scripts/test/test-python.sh --select skills $TESTS
 
       - name: Set up dependencies
+        if: needs.changes.outputs.skills_runtime == 'true'
         uses: ./.github/actions/setup-deps
         with:
-          npm: packages/cadgen-js
+          npm: packages/core
 
-      - name: Run the policy gates
-        run: scripts/test/test-global.sh
+      - name: Run the policy gates that load cadgen or its runtime
+        if: needs.changes.outputs.skills_policy != ''
+        env:
+          TESTS: ${{ needs.changes.outputs.skills_policy }}
+        run: |
+          # shellcheck disable=SC2086
+          scripts/test/test-global.sh $TESTS
 
-      - name: Run every skill suite
-        run: scripts/test/test-python.sh --select skills --print-weights
+      - name: Run the skill suites that drive the CAD kernel
+        if: needs.changes.outputs.skills_tests != ''
+        env:
+          TESTS: ${{ needs.changes.outputs.skills_tests }}
+        run: |
+          # shellcheck disable=SC2086
+          scripts/test/test-python.sh --select skills --print-weights $TESTS
 
-  # The docs site mirrors the skills' frontmatter, renders through cadgen-js and
-  # documents cadgen's commands, so it runs on any of those changing.
+  # The docs site: its static asset contract, lint, the Next build and icon verification, and
+  # the animated brand marks.
   docs:
     name: docs
     needs: changes
-    if: needs.changes.outputs.docs == 'true' || needs.changes.outputs.skills == 'true' || needs.changes.outputs.cadgenjs == 'true' || needs.changes.outputs.cadgen == 'true' || needs.changes.outputs.infra == 'true'
+    if: needs.changes.outputs.docs == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Set up dependencies
         uses: ./.github/actions/setup-deps
         with:
           python: "false"
           playwright: "false"
-          npm: apps/docs
+          npm: packages/core apps/docs
 
       - name: Run documentation checks
         run: scripts/test/test-docs.sh
@@ -306,17 +453,20 @@ jobs:
   packaging:
     name: packaging
     needs: changes
-    if: needs.changes.outputs.cadgen == 'true' || needs.changes.outputs.cadgenjs == 'true' || needs.changes.outputs.viewer == 'true' || needs.changes.outputs.infra == 'true'
+    if: needs.changes.outputs.packaging == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Set up dependencies
         uses: ./.github/actions/setup-deps
         with:
-          npm: packages/cadgen-js apps/viewer
+          npm: packages/core packages/ui apps/web apps/mcp
 
       - name: Bundle production outputs from clean
         run: scripts/bundle/bundle.sh --clean
@@ -328,6 +478,9 @@ jobs:
       # matching produces a wheel that imports fine and fails on a user's machine, so the
       # wheel is built and inspected here rather than trusted.
       - name: Check cadgen wheel contents
+        env:
+          CADGEN_KEEP_WHEEL: "1"
+          CADGEN_WHEEL_OUT_DIR: ${{ runner.temp }}/cadgen-wheel-check
         run: |
           python -m pip install build
           scripts/release/check-wheel-contents.sh
@@ -335,5 +488,9 @@ jobs:
       # The CLIs the way a user gets them -- pip-installed, from a directory that is not
       # this repo -- which is the only place a missing package-data glob or an accidental
       # repo-relative path shows up.
-      - name: Run installed-mode checks
-        run: scripts/test/test-installed.sh
+      - name: Run installed-mode checks against the verified wheel
+        run: |
+          shopt -s nullglob
+          wheels=("$RUNNER_TEMP/cadgen-wheel-check/"*.whl)
+          [ "${#wheels[@]}" -eq 1 ] || { echo "Expected one verified wheel" >&2; exit 1; }
+          scripts/test/test-installed.sh --wheel "${wheels[0]}"

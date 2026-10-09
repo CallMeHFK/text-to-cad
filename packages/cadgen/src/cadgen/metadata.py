@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import ast
 import math
+import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from cadgen.render import relative_to_cwd as _display_path
 
 
 class InvalidModelScriptError(ValueError):
     """A script whose model DECLARATION is malformed in a way directory
-    discovery should skip-with-a-note rather than abort on (e.g. two models in
-    one file). Contract violations inside a single model (a dict return,
+    discovery should skip-with-a-note rather than abort on (e.g. a file holding
+    several models named without its ``::function``). Contract violations inside a single model (a dict return,
     bad decorator arguments) stay plain ValueErrors and DO abort, because an
     explicitly-targeted build must fail loudly."""
 
@@ -23,8 +26,8 @@ class GeneratorMetadata:
     format: str
     mesh_tolerance: float | None
     mesh_angular_tolerance: float | None
-    # Library-first fields (design/library-first-generation.md): the @step/@dxf
-    # decorated entry function and its statically-declared output target.
+    # Library-first fields: the @step/@dxf decorated entry function and its
+    # statically-declared output target.
     entry_function: str | None = None
     out_target: str | None = None
     is_decorated: bool = False
@@ -57,15 +60,21 @@ class MeshExportDecl:
 
 
 
-def _display_path(path: Path) -> str:
-    resolved = path.resolve()
-    try:
-        return resolved.relative_to(Path.cwd().resolve()).as_posix()
-    except ValueError:
-        return resolved.as_posix()
+# The largest chord tolerance the tessellator honours. The value is RELATIVE --
+# a fraction of each component's bounding diagonal -- so 0.05 already lets a
+# facet sit a twentieth of the whole part away from the true surface. Past it the
+# tessellator's base grid collapses to a cell or two while its fixed angular
+# criterion keeps bisecting the slivers that leaves: a 10x20 cylinder comes out
+# with MORE triangles and a worse volume than at the default (464 triangles at
+# 1.5e-3; 13 000 at 0.2; 20% of the volume missing at 1.0), at exit 0. A number
+# that large is, in practice, an absolute millimetre deflection carried over from
+# a mesher that took one.
+MESH_TOLERANCE_MAX = 0.05
 
 
 def normalize_mesh_numeric(value: object, *, field_name: str) -> float | None:
+    """The ONE validator of a mesh tolerance, wherever it enters: a decorator
+    argument, a model run's flag, a format door's flag or keyword."""
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -75,6 +84,14 @@ def normalize_mesh_numeric(value: object, *, field_name: str) -> float | None:
         raise ValueError(f"{field_name} must be finite")
     if normalized <= 0.0:
         raise ValueError(f"{field_name} must be greater than 0")
+    if field_name == "mesh_tolerance" and normalized > MESH_TOLERANCE_MAX:
+        raise ValueError(
+            f"mesh_tolerance {normalized:g} is too large: the value is RELATIVE to each "
+            "component's bounding diagonal, not millimetres, so it must be at most "
+            f"{MESH_TOLERANCE_MAX:g} (default 1.5e-3). For an "
+            "absolute chord deviation of X mm on a part whose bounding diagonal is D mm, "
+            f"pass X/D -- {normalized:g} mm on a 200 mm part is {normalized / 200.0:g}"
+        )
     return normalized
 
 
@@ -206,7 +223,28 @@ def _match_model_decorator(
     return None
 
 
+def model_function_formats(source: bytes | str, filename: str = "<model>") -> dict[str, str]:
+    """``{function: "step" | "dxf"}`` for every model a module's source declares,
+    in file order; a mesh-only model reads as "step". A pure function of the
+    bytes: ``{}`` for source that declares none or does not parse."""
+    try:
+        tree = ast.parse(source, filename=filename)
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        return {}
+    decorator_names, module_aliases = _cadgen_decorator_aliases(tree)
+    formats: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            match = _match_model_decorator(node, decorator_names, module_aliases)
+            if match is not None:
+                formats[node.name] = match[0]
+    return formats
+
+
 _FUNCTION_NAMES_CACHE: dict[str, tuple[tuple[int, int], tuple[str, ...]]] = {}
+# A cached answer is kept only for a file whose mtime is older than this: a
+# same-size rewrite inside one mtime tick is otherwise invisible to the stat key.
+_FUNCTION_NAMES_SETTLE_NS = 2_000_000_000
 
 
 def model_function_names(script_path: Path | str) -> tuple[str, ...]:
@@ -233,7 +271,8 @@ def model_function_names(script_path: Path | str) -> tuple[str, ...]:
         if isinstance(node, ast.FunctionDef)
         and _match_model_decorator(node, decorator_names, module_aliases) is not None
     )
-    _FUNCTION_NAMES_CACHE[key] = (stamp, names)
+    if time.time_ns() - stat.st_mtime_ns > _FUNCTION_NAMES_SETTLE_NS:
+        _FUNCTION_NAMES_CACHE[key] = (stamp, names)
     return names
 
 
@@ -357,22 +396,24 @@ def imported_model(script_path: Path, function: str):
     does not run -- and read again. The module top must stay kernel-free, as the
     cad skill requires: this import is what every door pays to learn a model's
     declarations."""
+    from cadgen._internal.generation_runner import _MODULE_LOAD_LOCK
     from cadgen.authoring import import_closure_current, registered_model
 
     resolved = Path(script_path).resolve()
-    stamp = _script_stamp(resolved)
-    defn = registered_model(resolved, function)
-    if defn is None or getattr(defn, "stamp", None) != stamp or not import_closure_current(resolved):
-        from cadgen._internal.generation_runner import _load_generator_module, _without_bytecode_writes
-        from cadgen._internal.source_hash import evict_first_party_modules
-
-        # Like the build's own load: from a clean first-party module space (a helper a
-        # warm worker still holds would feed the reload its OLD values) and with no
-        # .pyc for the model or its helpers.
-        evict_first_party_modules()
-        with _without_bytecode_writes():
-            _load_generator_module(resolved)
+    with _MODULE_LOAD_LOCK:
+        stamp = _script_stamp(resolved)
         defn = registered_model(resolved, function)
+        if defn is None or getattr(defn, "stamp", None) != stamp or not import_closure_current(resolved):
+            from cadgen._internal.generation_runner import _load_generator_module, _first_party_from_source
+            from cadgen._internal.source_hash import evict_first_party_modules
+
+            # Like the build's own load: from a clean first-party module space (a helper a
+            # warm worker still holds would feed the reload its OLD values) and with no
+            # .pyc for the model or its helpers.
+            evict_first_party_modules()
+            with _first_party_from_source():
+                _load_generator_module(resolved)
+            defn = registered_model(resolved, function)
     if defn is None:
         raise InvalidModelScriptError(
             f"{_display_path(resolved)} declares {function}() but importing it registered no such model"

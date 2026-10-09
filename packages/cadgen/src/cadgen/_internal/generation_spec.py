@@ -35,7 +35,6 @@ class EntrySpec:
     script_path: Path | None = None
     generator_metadata: GeneratorMetadata | None = None
     dxf_path: Path | None = None
-    step_export_path: Path | None = None
     # ``None`` means "the caller specified nothing" — the adaptive resolver
     # supplies the value. A number is the caller's explicit choice, and
     # ``is not None`` IS the explicitness test; there is no separate flag and
@@ -52,9 +51,8 @@ class EntrySpec:
 
     @property
     def entry_path(self) -> Path | None:
-        # The on-disk file the tree is keyed by. Library-first models
-        # (design/library-first-generation.md) key by the ARTIFACT: the tree
-        # must ride beside the .step wherever out= routed it,
+        # The on-disk file the tree is keyed by. Library-first models key by the
+        # ARTIFACT: the tree must ride beside the .step wherever out= routed it,
         # so the viewer (artifacts-only catalog) finds it, and so provenance —
         # not filenames — links artifact to source. Imported STEP entries and
         # DXF drawings keep their own keying.
@@ -125,6 +123,8 @@ class GeneratedStepResult:
     scene: LoadedStepScene | None
     selector_bundle: SelectorBundle | None = None
     tree: str | None = None
+    # The saved STEP was kept, not written: its writer input was unchanged.
+    step_kept: bool = False
 
 
 def _cli_progress_line(
@@ -141,35 +141,40 @@ def _display_name_for_path(path: Path) -> str:
     return path.stem
 
 
-def _display_path(path: Path) -> str:
-    resolved = path.resolve()
-    try:
-        return resolved.relative_to(Path.cwd().resolve()).as_posix()
-    except ValueError:
-        return resolved.as_posix()
+# ONE cwd-relative display helper (cadgen.render); the name is what this
+# pipeline's modules import.
+_display_path = relative_to_cwd
 
 
 def _apply_step_options_to_spec(spec: EntrySpec, step_options: StepImportOptions) -> EntrySpec:
+    """Apply a model run's ``--mesh-tolerance`` / ``--mesh-angular-tolerance``.
+
+    ONE precedence rule: run-level flag > declaration (`@stl`/`@glb`/`@threemf`)
+    > `@step` model-level > the tessellator's default. A flag is a TEMPORARY
+    override of every declared mesh for this run, so it is written over each
+    declaration's own tolerance here -- the single place the rule is decided --
+    and not only over the model-level value a declaration falls back to. The
+    mesh ledger records the pair each file was actually written at, so the next
+    unflagged run sees a file cut at the flag's tolerance as NOT the declared
+    export and restores it, once; a repeated run at the same flags is a no-op.
+    """
     if not step_options.has_metadata or spec.step_path is None:
         return spec
+    chord = step_options.mesh_tolerance
+    angle = step_options.mesh_angular_tolerance
     return replace(
         spec,
-        mesh_tolerance=step_options.mesh_tolerance if step_options.mesh_tolerance is not None else spec.mesh_tolerance,
-        mesh_angular_tolerance=(
-            step_options.mesh_angular_tolerance
-            if step_options.mesh_angular_tolerance is not None
-            else spec.mesh_angular_tolerance
+        mesh_tolerance=chord if chord is not None else spec.mesh_tolerance,
+        mesh_angular_tolerance=angle if angle is not None else spec.mesh_angular_tolerance,
+        mesh_exports=tuple(
+            replace(
+                export,
+                mesh_tolerance=chord if chord is not None else export.mesh_tolerance,
+                mesh_angular_tolerance=angle if angle is not None else export.mesh_angular_tolerance,
+            )
+            for export in spec.mesh_exports
         ),
     )
-
-
-def _spec_requests_extra_outputs(spec: EntrySpec) -> bool:
-    """True when the target asks for an on-demand output beyond the tree
-    (a re-emitted document: ``cadgen step build IN OUT`` sets ``step_export_path``;
-    a model's own ``out=`` is its document, not an extra). Such an output must be produced
-    even when the compose is current, so it defeats every no-op and reuse fast
-    path."""
-    return spec.step_export_path is not None
 
 
 def _resolve_discovery_root(root: Path | str) -> Path:

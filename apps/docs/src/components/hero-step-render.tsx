@@ -1,5 +1,6 @@
 "use client";
 
+import { createHttpCadResourceProvider } from "@text-to-cad/core/client";
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
@@ -11,18 +12,18 @@ import {
   animationClipDuration,
   findAnimationClip,
   firstAnimationClipId,
-} from "cadgen-js/common/animationClock.js";
-import { CAD_SCENE_SCALE, buildModel } from "cadgen-js/common/cadScene.js";
-import { loadSourceAnimation } from "cadgen-js/common/renderModule.js";
-import { renderModel } from "cadgen-js/common/renderModel.js";
+} from "@text-to-cad/core/common/animationClock.js";
+import { CAD_SCENE_SCALE, buildModel } from "@text-to-cad/core/common/cadScene.js";
+import { loadSourceAnimation } from "@text-to-cad/core/common/renderModule.js";
+import { renderModel } from "@text-to-cad/core/common/renderModel.js";
 import {
   loadSource,
   packageSourceFromBaseUrl,
   stepParameterRuntime,
-} from "cadgen-js/common/source.js";
-import { cloneThemePresetSettings } from "cadgen-js/common/themeSettings.js";
+} from "@text-to-cad/core/common/source.js";
+import { cloneThemePresetSettings } from "@text-to-cad/core/common/themeSettings.js";
 
-// The hero renders the planetary gear STEP the way every cadgen-js client
+// The hero renders the planetary gear STEP the way every @text-to-cad/core client
 // renders a STEP: the model's render package (exact surfaces, tessellated in
 // the browser) plus its sidecar (kinematics for the mate graph, copied
 // animation clips for choreography). No GLB export, no site-local gear math —
@@ -31,8 +32,6 @@ const HERO_PACKAGE_BASE_URL = "/hero/planetary";
 const HERO_SIDECAR_URL = "/hero/planetary_gear_assembly.step.json";
 const HERO_DOCUMENT_HASH = "58dfc3609e12077876821915a7aff14e2333359142c0fd3770d357d55044c77d";
 const HERO_STEP_CAD_PATH = "models/assemblies/STEP/planetary_gear_assembly/planetary_gear_assembly.step";
-const HERO_STEP_DEMO_URL =
-  "https://cad.fun/?file=fun%2Fplanetary_gear_assembly.step";
 const HERO_STEP_LABEL = "PLANETARY_GEAR_ASSEMBLY.STEP";
 const HERO_CLIP_ID = "meshCycle";
 // The mesh cycle covers 1260 degrees of drive in one nominal pass; slowed so
@@ -45,11 +44,11 @@ type HeroClip = ReturnType<typeof findAnimationClip>;
 
 const STEP_PREVIEW_PALETTES = {
   dark: {
-    background: "#111820",
-    border: "#3b4553",
+    background: "#292929",
+    border: "#414141",
     fill: ["#c7d0d8", "#aeb9c3", "#d9dee3", "#8f9ba7"],
-    headerBackground: "rgba(17, 24, 32, 0.9)",
-    headerText: "#c9d3df",
+    headerBackground: "#303030",
+    headerText: "#d4d4d4",
     keyLight: "#f6f8fb",
     keyLightIntensity: 2.5,
     fillLight: "#7f95ad",
@@ -58,11 +57,11 @@ const STEP_PREVIEW_PALETTES = {
     ambientLightIntensity: 1.85,
   },
   light: {
-    background: "#eef1f5",
-    border: "#c9cfda",
+    background: "#fafafa",
+    border: "#e5e5e5",
     fill: ["#d7dce0", "#cdd3d8", "#e4e7ea", "#bfc7ce"],
-    headerBackground: "rgba(238, 241, 245, 0.9)",
-    headerText: "#4c566a",
+    headerBackground: "#ffffff",
+    headerText: "#737373",
     keyLight: "#ffffff",
     keyLightIntensity: 2.6,
     fillLight: "#cfd8e3",
@@ -249,20 +248,14 @@ export function HeroStepRender() {
     const load = async () => {
       try {
         setStatus("loading step");
-        const descriptor = await fetch(`${HERO_PACKAGE_BASE_URL}/assembly.json`, {
-          cache: "no-store",
-        }).then((response) => {
-          if (!response.ok) {
-            throw new Error(`hero assembly.json: HTTP ${response.status}`);
-          }
-          return response.json();
-        });
+        const resources = createHttpCadResourceProvider({ cache: "no-store" });
+        const descriptor = await resources.readJson(`${HERO_PACKAGE_BASE_URL}/assembly.json`);
         const source = await loadSource({
           ...packageSourceFromBaseUrl(HERO_PACKAGE_BASE_URL, descriptor),
           stepParameterUrl: HERO_SIDECAR_URL,
           documentHash: HERO_DOCUMENT_HASH,
           cadPath: HERO_STEP_CAD_PATH,
-        });
+        }, { resources });
         const animation = await loadSourceAnimation(source.sourceSidecar, { name: "hero animation" });
         const clips = (animation?.clips ?? {}) as Parameters<typeof findAnimationClip>[0];
         if (disposed) {
@@ -342,26 +335,14 @@ export function HeroStepRender() {
         />
       </div>
       <div
-        className="flex min-h-8 shrink-0 items-center justify-between gap-3 border-t px-3 py-[7px] text-label uppercase leading-none tracking-[1.5px]"
+        className="flex min-h-8 shrink-0 items-center justify-between gap-3 border-t px-3 py-[7px] font-mono text-label leading-none"
         style={{
           backgroundColor: palette.headerBackground,
           borderColor: palette.border,
           color: palette.headerText,
         }}
       >
-        {status === HERO_STEP_LABEL ? (
-          <a
-            className="min-w-0 truncate transition hover:text-primary"
-            href={HERO_STEP_DEMO_URL}
-            target="_blank"
-            rel="noreferrer"
-            title="Open planetary gear assembly in the text-to-cad demo"
-          >
-            {status}
-          </a>
-        ) : (
-          <span className="min-w-0 truncate">{status}</span>
-        )}
+        <span className="min-w-0 truncate">{status}</span>
       </div>
     </div>
   );

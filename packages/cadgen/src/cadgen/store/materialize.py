@@ -472,6 +472,44 @@ def _location_from_matrix(matrix: list[float]):
     return Location(_native_location_from_matrix(matrix))
 
 
+# Wrapper state build123d's ``Shape.__init__`` establishes itself, or that a
+# placed occurrence must never inherit from its prototype.
+_PLACEMENT_UNCOPIED_KEYS = frozenset({"_wrapped", "_NodeMixin__parent", "_NodeMixin__children"})
+
+
+def _placed_copy(base: Any, location: Any) -> Any:
+    """``base.moved(location)`` without the geometry copy ``moved()`` throws away.
+
+    build123d's ``moved()`` deep-copies the wrapper, which runs
+    ``BRepBuilderAPI_Copy`` over the whole TShape, then replaces the copy's
+    native shape with ``base.wrapped.Moved(loc)`` — a shape that shares the
+    ORIGINAL TShape. The copied geometry is garbage before ``moved()`` returns,
+    and on an assembly of thousands of occurrences it was most of the document
+    preparation time. This constructs the same result directly: the same
+    build123d class over the same shared TShape at the composed location,
+    with the same plain Python metadata deep-copied from ``base`` (recipe,
+    color, label, material). A base that is attached to a hierarchy, carries
+    joints, or cannot be wrapped from a bare ``TopoDS_Shape`` keeps the
+    original ``moved()``; a decoded component never is.
+    """
+    import copy
+
+    raw = base.__dict__
+    if raw.get("_NodeMixin__parent") is not None or raw.get("_NodeMixin__children") or raw.get("joints"):
+        return base.moved(location)
+    try:
+        placed = type(base)(base.wrapped.Moved(location.wrapped))
+    except TypeError:
+        return base.moved(location)
+    for key, value in raw.items():
+        if key in _PLACEMENT_UNCOPIED_KEYS:
+            continue
+        # ``Shape.__deepcopy__`` keeps ``topo_parent`` by reference and copies
+        # everything else.
+        placed.__dict__[key] = value if key == "topo_parent" else copy.deepcopy(value)
+    return placed
+
+
 def _color_from_entry(entry: dict[str, Any]):
     values = entry.get("color")
     if not isinstance(values, (list, tuple)) or len(values) < 3:
@@ -600,7 +638,7 @@ def materialize_descriptor(
         base = shapes.get(cid)
         if base is None:
             raise FileNotFoundError(f"tree {tree_hash}: missing component {cid}")
-        child = base.moved(_location_from_matrix(occurrence.get("transform")))
+        child = _placed_copy(base, _location_from_matrix(occurrence.get("transform")))
         child.label = str(occurrence.get("name") or occurrence.get("id") or "")
         color = _color_from_entry(occurrence) or _color_from_entry(components.get(cid) or {})
         if color is not None:

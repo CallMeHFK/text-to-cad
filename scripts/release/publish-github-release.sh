@@ -14,7 +14,7 @@ ASSETS=()
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/release/publish-github-release.sh [--target REF] [--dry-run] [--publish]
+  scripts/release/publish-github-release.sh [--target REF] [--asset PATH]... [--dry-run] [--publish]
 
 Creates the immutable release identity for the current repo version:
 
@@ -135,6 +135,12 @@ if gh release view "$tag_name" >/dev/null 2>&1; then
   if [ "${#ASSETS[@]}" -gt 0 ]; then
     gh release upload "$tag_name" "${ASSETS[@]}" --clobber
     echo "Attached ${#ASSETS[@]} asset(s) to GitHub Release: $tag_name"
+  fi
+  # A manual resume with --publish must also finish a draft created by an
+  # earlier run. Never turn an already-published release back into a draft.
+  if [ "$DRAFT" -eq 0 ]; then
+    gh release edit "$tag_name" --draft=false
+    echo "Published GitHub Release: $tag_name"
   fi
   exit 0
 fi

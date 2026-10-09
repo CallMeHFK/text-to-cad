@@ -25,17 +25,13 @@ class RootExports(unittest.TestCase):
     def test_the_generator_facing_helpers_are_at_the_root(self):
         """A generator should not need a submodule path for these.
 
-        `read_step` in particular is the cached, freshness-recording build123d drop-in
+        `read_step` in particular is the cached build123d drop-in
         and the most generator-facing thing cadgen owns; it used to require
         `from cadgen.step_scene import import_step` while `AssemblyHelper` sat at the root.
-        `declare_input` is its counterpart for a file cadgen has no reader for, and
-        belongs beside it for the same reason: a model author reaching for the
-        freshness contract must not have to find a submodule to get it.
         """
         for name in (
             "AssemblyHelper", "target", "track", "report",
             "read_step", "read_scene", "StepScene", "Selection", "Occurrence",
-            "declare_input",
         ):
             with self.subTest(name=name):
                 self.assertTrue(hasattr(cadgen, name))

@@ -36,9 +36,9 @@ Version-specific pitfalls and construction alternatives are in
 
 ## Viewer and snapshots
 
-Use `$cad-viewer` for launcher or review-link troubleshooting. If unavailable or
-startup fails, report the failure and use Python geometry checks plus snapshots.
-Do not reconstruct viewer URLs from a separate convention here.
+Show the result as in [Show the model](../SKILL.md#show-the-model). With the CLI viewer,
+`cadgen viewer --help` lists its options. If showing fails, report the failure and use
+Python geometry checks plus snapshots.
 
 Snapshot commands take saved documents, not model scripts. Run the model first
 when its output is missing; otherwise verify the input format/path, Chromium

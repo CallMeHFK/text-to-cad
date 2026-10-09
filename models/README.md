@@ -16,8 +16,7 @@ models/
 ├── examples/         standalone demo PARTS, one script each
 ├── assemblies/       demo ASSEMBLIES, one src/<assembly>/ group each
 ├── drawings/         2D `@dxf` drawings, one script each
-├── thang010146/      imported, annotated mechanism assemblies
-├── f1/ f14d/ hypercar/ moonwatch/ motorbike/ qdd_actuator/ w16/
+├── f1/ f14d/ hypercar/ moonwatch/ motorbike/ qdd_actuator/ radial/ w16/
 ├── tendon_hand/      tendon-driven research hand (source-only)
 ├── falcon_heavy/     SpaceX public-source reconstruction
 ├── juno/ lyra/       authored robot description packages (URDF/SRDF)
@@ -73,9 +72,7 @@ For manual edge-case checks and debugging, use [tests/](tests/README.md). Automa
   mates and animation source embedded in their owning `@step` declarations
   (`planetary_gear_assembly`, `mars_rover_concept`).
 - [drawings/](drawings/src/README.md): 2D `@dxf` drawings as one cad-project,
-  one script each, artifacts in `DXF/`. `drawings/DXF/imported/` holds
-  committed SOURCES rather than outputs: permissively licensed `.dxf` files
-  for tooling robustness tests.
+  one script each, artifacts in `DXF/`.
 
 Automated suites own their own fixtures and never read this tree — the viewer
 launch and browser gates, for instance, generate or commit their STEP fixture
@@ -85,11 +82,6 @@ with the tests.
 
 Models that need a **folder of their own** rather than a single loose script.
 
-- [thang010146/](thang010146/README.md): mechanism assemblies from the
-  [thang010146](https://www.youtube.com/@thang010146/videos) YouTube channel.
-  Its content is `STEP/imported/` — annotated mechanism STEPs, each a
-  `cadgen.read_step` of the vendor document re-exported with kinematics
-  (`.step.json` sidecar) with animation embedded by its owning Python model.
 - [f1/](f1/src/README.md): open-wheel F1 car — a modular `lib/` build over one
   shared surface vocabulary, plus `f1_stage.appearance.json`, the authored
   presentation stage. Its DRS four-bar and rack-and-track-rod steering are
@@ -113,6 +105,12 @@ Models that need a **folder of their own** rather than a single loose script.
   one virtual `drive` DOF gears the rotor, carrier, both ball cages and the
   three planets through the 4.5:1 planetary reduction, with the exploded
   teardown embedded in `qdd_actuator.py`.
+- [radial/](radial/src/README.md): nine-cylinder supercharged radial aircraft engine, as a
+  museum restoration. Eighteen system models are linked by `src/radial.py`, with a
+  master/articulating rod train, a 1/8-speed cam ring, a 3:2 planetary reduction and a
+  10:1 blower. It has a sectioned cylinder, a crankcase window, and `running` and
+  `explode` clips. Its hand-off notes (`REPORT.md`, `GAUNTLET.md`, `BUILDING.md`,
+  `BUGS.md`) sit beside the source.
 - [w16/](w16/src/README.md): quad-turbo 8.0 L W16, sectioned museum cutaway —
   thirteen system models linked by `src/w16.py`, with `crank` and `explode`
   clips from its embedded `ANIMATION_JS`. Its hand-off notes (`REPORT.md`,

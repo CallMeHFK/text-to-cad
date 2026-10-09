@@ -25,6 +25,8 @@ node_modules
 dist
 coverage
 
+# Playwright's per-run output.
+test-results/
 
 # Temporary files and scratch notes
 *.tmp
@@ -61,9 +63,6 @@ models/**/*.mp4
 models/**/*.mov
 models/**/*.webm
 models/**/*.mkv
-
-# Local printer credentials
-/bambu-printers.json
 
 # Component-GLB render packages are regenerated on demand; never committed.
 .*.step.glb/

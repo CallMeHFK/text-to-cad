@@ -4,19 +4,20 @@ from collections.abc import Callable
 import copy
 import contextlib
 from dataclasses import dataclass
+import importlib.abc
+import importlib.machinery
 import importlib.util
 from pathlib import Path
 import sys
+import threading
 from typing import Iterator
 from typing import Sequence
 
 from cadgen._internal.source_hash import PythonSourceClosure
 from cadgen._internal.source_hash import PythonSourceHash
-from cadgen._internal.source_hash import capture_runtime_closure
 from cadgen._internal.source_hash import evict_first_party_modules
+from cadgen._internal.source_hash import is_first_party_source_file
 from cadgen._internal.source_hash import python_source_hash
-from cadgen._internal.source_hash import record_discovered_inputs
-from cadgen._internal.source_hash import record_first_party_execution
 from cadgen._internal.step_scene import LoadedStepScene
 from cadgen.catalog import build_scope
 from cadgen.cli_logging import CliLogger
@@ -32,6 +33,7 @@ from cadgen.render import relative_to_file
 from cadgen.step_export import build_build123d_step_scene
 
 from cadgen._internal.generation_spec import EntrySpec, _display_path
+from cadgen._internal import filetrace
 from cadgen._internal.import_roots import import_roots
 
 
@@ -54,6 +56,25 @@ def package_context(script_path: Path) -> tuple[str | None, Path | None]:
     if not parts:
         return None, None
     return ".".join(reversed(parts)), folder
+
+
+_MODULE_LOAD_LOCK = threading.RLock()
+
+
+def _seat_import_roots(search_paths: Sequence[str]) -> None:
+    """Put a script's import roots at the front of sys.path, in order, even when an
+    earlier load already put them on it.
+
+    A warm process (the daemon reading declarations, the viewer) loads scripts from
+    many projects, and every project names its helpers `lib`. Evicting another
+    project's `lib` makes Python look `lib` up again, along sys.path: a root that an
+    earlier load left AHEAD of this script's own resolves it to that project's folder.
+    Nothing is taken away: a script loaded inside a build (cadgen.sources) must not
+    pull its caller's folder out from under the caller's own later imports."""
+    for candidate in reversed(search_paths):
+        with contextlib.suppress(ValueError):
+            sys.path.remove(candidate)
+        sys.path.insert(0, candidate)
 
 
 def _load_generator_module(script_path: Path) -> object:
@@ -93,10 +114,9 @@ def _load_generator_module(script_path: Path) -> object:
     # Capture the exact compiled buffer before executing any module code. The
     # file can change during module initialization, or even between compile and
     # exec; hashing its path later would associate new source with old geometry.
-    from cadgen._internal.source_hash import _semantic_source_bytes
-    from cadgen.store.closure import note_consumed_file_hash
+    from cadgen.store.closure import note_compiled_source
 
-    note_consumed_file_hash(resolved_script_path, _semantic_source_bytes(source_bytes))
+    note_compiled_source(resolved_script_path, source_bytes)
 
     module = importlib.util.module_from_spec(module_spec)
     # sys.path is exactly what `python script.py` gives: the script's own folder first,
@@ -107,93 +127,88 @@ def _load_generator_module(script_path: Path) -> object:
     search_paths = import_roots(resolved_script_path)
     if package_root is not None:
         search_paths = [*search_paths, str(package_root)]
-    for candidate in reversed(search_paths):
-        if candidate not in sys.path:
-            sys.path.insert(0, candidate)
 
-    # Another project's modules must not be importable-by-cache here: every
-    # cad-project shares the same top-level names (`lib`, sibling models), so a
-    # warm process that built project A would hand project B a stale `lib`
-    # bound to A's directory. Path-aware eviction at the ONE load choke point
-    # makes "which project's lib" unambiguous for every caller.
     from cadgen._internal.source_hash import evict_foreign_first_party_modules
-
-    evict_foreign_first_party_modules(search_paths)
-    if package is not None:
-        # The parent packages must exist for a relative import to resolve.
-        importlib.import_module(package)
-        module.__package__ = package
-    sys.modules[module_name] = module
-    # What the module top executes is what its declarations were evaluated from;
-    # the metadata reader reuses this load only while every one of those files
-    # still holds the bytes it had now (cadgen.authoring.import_closure_current).
     from cadgen._internal.source_hash import record_first_party_execution
     from cadgen.authoring import record_import_closure
 
-    with record_first_party_execution() as executed_files:
-        exec(source_code, module.__dict__)
-    record_import_closure(resolved_script_path, executed_files)
+    # One load at a time per process: the daemon's relay threads read several
+    # scripts' declarations at once, and sys.path and sys.modules are shared.
+    with _MODULE_LOAD_LOCK:
+        _seat_import_roots(search_paths)
+        # Another project's modules must not be importable-by-cache here: every
+        # cad-project shares the same top-level names (`lib`, sibling models), so a
+        # warm process that built project A would hand project B a stale `lib`
+        # bound to A's directory. Path-aware eviction at the ONE load choke point
+        # makes "which project's lib" unambiguous for every caller.
+        evict_foreign_first_party_modules(search_paths)
+        if package is not None:
+            # The parent packages must exist for a relative import to resolve.
+            importlib.import_module(package)
+            module.__package__ = package
+        sys.modules[module_name] = module
+        # What the module top executes is what its declarations were evaluated from;
+        # the metadata reader reuses this load only while every one of those files
+        # still holds the bytes it had now (cadgen.authoring.import_closure_current).
+        with record_first_party_execution() as executed_files:
+            exec(source_code, module.__dict__)
+        record_import_closure(resolved_script_path, executed_files)
 
     return module
 
 
+class _SourceOnlyLoader(importlib.machinery.SourceFileLoader):
+    """Compiles the bytes on disk, never a ``__pycache__`` ``.pyc``, and hands
+    those exact bytes to the build's execution hashes."""
+
+    def get_code(self, fullname: str):  # noqa: ANN201 - importlib protocol
+        path = self.get_filename(fullname)
+        data = self.get_data(path)
+        from cadgen.store.closure import note_compiled_source
+
+        note_compiled_source(path, data)
+        return compile(data, path, "exec", dont_inherit=True)
+
+
+class _FirstPartyFromSource(importlib.abc.MetaPathFinder):
+    """Loads every first-party module through :class:`_SourceOnlyLoader`.
+
+    It asks the path finder itself, never the rest of ``sys.meta_path``: two
+    finders that each delegate to the other would hand one lookup back and
+    forth forever. Anything that is not first-party source is not answered
+    here, so every other finder sees it as if this one were absent."""
+
+    def find_spec(self, fullname, path, target=None):  # noqa: ANN001, ANN201 - importlib protocol
+        spec = importlib.machinery.PathFinder.find_spec(fullname, path, target)
+        if (spec is None or type(spec.loader) is not importlib.machinery.SourceFileLoader or not spec.origin
+                or not is_first_party_source_file(Path(spec.origin).resolve())):
+            return None
+        spec.loader = _SourceOnlyLoader(spec.loader.name, spec.loader.path)
+        return spec
+
+
 @contextlib.contextmanager
-def _without_bytecode_writes():
-    """Write no ``.pyc`` for anything imported inside this window.
+def _first_party_from_source():
+    """Run model code from the source bytes on disk: no ``.pyc`` read for a
+    first-party module, and none written for anything imported here.
 
-    The purge below can only delete what it is allowed to delete. On POSIX an
-    unlink succeeds whatever holds the file, so the purge always lands; on
-    Windows a ``__pycache__`` entry held open by a scanner, an editor, or a
-    sibling interpreter refuses deletion, and the purge swallows it
-    (``ignore_errors=True``). What survives is a stale ``.pyc`` that CPython
-    will then accept, because it validates by (whole-second mtime, size) -- two
-    same-length edits inside one second is exactly an agent's edit loop. The
-    result is a build against code that is not on disk: silently wrong output,
-    which is worse than any crash.
-
-    So the guarantee stops resting on a delete succeeding. Nothing cadgen
-    imports for a model writes bytecode at all, which means there is nothing to
-    go stale and nothing to validate wrongly. Model libraries are small and this
-    window runs once per job, so recompiling from source costs the milliseconds
-    the entry script already pays (it is compiled from bytes at :58-63 for this
-    same reason).
-    """
+    CPython accepts a ``.pyc`` by (whole-second mtime, size), so two same-length
+    edits inside one second -- an agent's edit loop -- run STALE bytecode left
+    by any tool, while the closure hashes the new source: silently wrong output
+    recorded as current. Model code never reads bytecode here, so nothing can
+    go stale; model libraries are small, and recompiling them costs the
+    milliseconds the entry script already pays (it is compiled from bytes for
+    the same reason)."""
     previous = sys.dont_write_bytecode
     sys.dont_write_bytecode = True
+    finder = _FirstPartyFromSource()
+    sys.meta_path.insert(0, finder)
     try:
         yield
     finally:
         sys.dont_write_bytecode = previous
-
-
-def _purge_stale_bytecode(script_path: Path) -> None:
-    """Drop ``__pycache__`` beside the generator and its static import closure, once per job.
-
-    CPython validates a ``.pyc`` by (whole-second mtime, size): two same-length
-    edits inside one second load STALE BYTECODE on re-import -- exactly the
-    cadence of an agent-driven edit loop. The job boundary is the one place the
-    first-party module space is rebuilt, so it is the one place this belongs
-    (the old scope layer used to do it on every miss, mid-job, alongside an eviction
-    that broke lazy imports).
-
-    Best-effort by design, and no longer the guarantee: ``ignore_errors=True``
-    hides a Windows refusal to delete an open ``.pyc``, so correctness rests on
-    :func:`_without_bytecode_writes` instead -- cadgen writes no bytecode for
-    model code, so after this sweep there is nothing left to go stale. This
-    clears what OTHER tools left behind."""
-    import shutil
-
-    from cadgen._internal import scope_capture
-
-    resolved = script_path.resolve()
-    parents = {resolved.parent}
-    for root in import_roots(resolved):
-        try:
-            parents |= {f.parent for f in scope_capture.static_import_closure(resolved, root)}
-        except Exception:  # noqa: BLE001 - a closure that cannot be traced still gets the script's own folder purged
-            continue
-    for parent in parents:
-        shutil.rmtree(parent / "__pycache__", ignore_errors=True)
+        with contextlib.suppress(ValueError):
+            sys.meta_path.remove(finder)
 
 
 @dataclass(frozen=True)
@@ -340,6 +355,9 @@ def _write_drawing_record(
             "hash": closure_hash,
             "files": closure_files,
             "shas": dict(getattr(source_closure, "file_hashes", None) or {}),
+            "names": {rel: list(names) for rel, names in (getattr(source_closure, "names", None) or {}).items()},
+            "wholes": dict(getattr(source_closure, "wholes", None) or {}),
+            "own": {rel: list(names) for rel, names in (getattr(source_closure, "own", None) or {}).items()},
             "static": False,
         },
         "constants": dict(getattr(source_closure, "constants", None) or {}),
@@ -347,7 +365,9 @@ def _write_drawing_record(
         "outputs": {str(written): {"sha256": hashlib.sha256(written.read_bytes()).hexdigest()}},
         "stepHash": "",
     }
-    decision = decide(model_path, ran_closure_hash=closure_hash, ran_files=closure_files)
+    decision = decide(model_path, ran_closure_hash=closure_hash, ran_files=closure_files,
+                      ran_names=record["closure"]["names"], ran_shas=record["closure"]["shas"],
+                      ran_wholes=record["closure"]["wholes"], ran_own=record["closure"]["own"])
     if not decision.publish_outputs:
         return
     write_record(model_path, record)
@@ -501,46 +521,25 @@ def _run_script_generator_body(
     progress: object | None = None,
     _defer_reference_scene: bool = False,
 ) -> LoadedStepScene | None:
-    # Kernel-op memoization (design/incremental-generation.md): installed here so
-    # every generator run — cold CLI or warm daemon worker — re-executes the model
-    # script against memoized build123d choke points. The cache lives in
-    # cadgen._internal.op_memo, which module eviction never touches, so a warm
-    # worker keeps it across requests. CADGEN_OP_MEMO=0 disables.
-    from cadgen._internal import op_memo
-
-    op_memo.install()
-    # Order-stable shape de-duplication (see determinism.py). Installed in the
-    # same breath as the op memo and for the same reason: both exist so that a
-    # re-executed model script produces the SAME geometry it produced last time.
-    # An op-memo entry that hands back identical shapes is worthless if the code consuming
-    # them re-keys the components anyway, so this has to be in force before the
-    # generator's first kernel call, not merely before the tree write.
+    # Order-stable shape de-duplication (see determinism.py): a re-executed model
+    # script should produce the SAME geometry it produced last time, and component
+    # identity is its bytes. This has to be in force before the generator's first
+    # kernel call, not merely before the tree write.
     from cadgen._internal import determinism
 
     determinism.install()
-    # Establish the canonical memo interface. Only the earlier worker
-    # bootstrap can enable reuse; a generic embedding may already have run
-    # authored initialization and cannot upgrade that untrusted snapshot.
-    from cadgen import memoization
-
-    memoization.install()
     generated_scene: LoadedStepScene | None = None
-    # Deterministic closure capture (see run_script_generator's docstring): start from a
-    # clean first-party module space, then record every first-party file executed while
-    # the generator loads and runs. The recorded set is complete even if the generator
-    # unloads modules mid-run; the sys.modules delta stays as a belt-and-braces union.
-    # Alongside it, the DISCOVERED-input window: a model's Python reach announces
-    # itself, but a data file it reads does not, so `cadgen.read_step` declares one
-    # here and it joins the closure like any other input.
+    # Deterministic closure capture: start from a clean first-party module space, so
+    # every first-party file the generator loads and runs executes inside the window
+    # and is hashed as it runs (ExecutionHashes), from the source it was compiled from
+    # (_first_party_from_source). Alongside it, the trace: every file the build opened,
+    # whoever opened it, and the folders its code listed.
     evict_first_party_modules()
-    _purge_stale_bytecode(spec.script_path)
-    modules_before_load = set(sys.modules)
     from cadgen.store.closure import ExecutionHashes
 
     with (
-        _without_bytecode_writes(),
-        record_first_party_execution() as executed_files,
-        record_discovered_inputs() as read_files,
+        filetrace.capture() as trace,
+        _first_party_from_source(),
         ExecutionHashes() as executed_hashes,
     ):
         with logger.timed(f"load generator {spec.source_ref}"):
@@ -575,42 +574,47 @@ def _run_script_generator_body(
         ):
             raw_payload = generator()
 
-    source_closure: PythonSourceClosure | None = None
+    # A model's own outputs are never its inputs: reading one back reads the
+    # previous run, so a read the trace saw is dropped here, and a folder its
+    # code listed is hashed without them.
+    from cadgen.store.closure import build_closure
+
+    own_outputs = _own_outputs(spec, model_format, entry_name)
+    read_files, listed = trace.inputs(outputs=own_outputs)
+    # The closure a record carries: the script + its static closure (stopping at
+    # child models — a result edge is tracked by pin, not by file), every file
+    # that executed (hashed AT execution), and the data files and folders the run
+    # read, as it read them. Paths are relative to the GENERATOR's folder, never
+    # the output's: `out=` routes the output anywhere, and basing the closure
+    # there would hash the same source differently depending on where its
+    # document is written. Every child the body called, with the tree it resolved
+    # to: this waits for any child job the body never forced (called and
+    # discarded), whose result is still this build's dependency.
+    child_trees = frame.child_trees()
+    store_closure = build_closure(
+        spec.script_path,
+        executed=executed_hashes.hashes,
+        inputs=read_files,
+        listings=listed,
+        outputs=own_outputs,
+        children=[child for child, _tree in child_trees],
+        sources=executed_hashes.sources,
+    )
+    source_closure = PythonSourceClosure(
+        closure_hash=store_closure.hash,
+        files=store_closure.files,
+        constants=store_closure.constants,
+        file_hashes=store_closure.shas,
+        names=store_closure.names,
+        wholes=store_closure.wholes,
+        own=store_closure.own,
+    )
     if model_format == "step":
         payload = _normalize_step_payload(raw_payload, script_path=spec.script_path)
         if spec.step_path is None:
             raise RuntimeError(f"{spec.source_ref} has no configured STEP output")
         # Kinematics (validated at decoration) rides the scene into the sidecar.
         declared = _resolve_declared_kinematics(getattr(generator, "__cadgen_model__", None))
-        # Record paths relative to the model folder so the assembly.json stays
-        # portable. The base is the GENERATOR's folder, never the output's:
-        # with an explicit `--write <path>` the step_path moves to the output
-        # location, and basing the closure there changed every recorded
-        # relpath — the same source hashed differently depending on where its
-        # export was written, defeating every closure-keyed reuse.
-        # The closure a record carries: the script + its static closure (stopping at
-        # child models — a result edge is tracked by pin, not by file), every file
-        # that executed (hashed AT execution), and the data files the run declared.
-        from cadgen.store.closure import build_closure
-
-        for read_path in read_files:
-            executed_hashes.note(read_path)
-        # Every child the body called, with the tree it resolved to. Waits for
-        # any child job the body never forced (called and discarded): its
-        # result is still this build's dependency.
-        child_trees = frame.child_trees()
-        store_closure = build_closure(
-            spec.script_path,
-            executed=executed_hashes.hashes,
-            discovered_inputs=read_files,
-            children=[child for child, _tree in child_trees],
-        )
-        source_closure = PythonSourceClosure(
-            closure_hash=store_closure.hash,
-            files=store_closure.files,
-            constants=store_closure.constants,
-            file_hashes=store_closure.shas,
-        )
         generated_scene = _write_shape_step_payload(
             payload,
             output_path=spec.step_path,
@@ -633,16 +637,6 @@ def _run_script_generator_body(
     elif model_format == "dxf":
         if spec.dxf_path is None:
             raise RuntimeError(f"{spec.source_ref} has no configured DXF output")
-        # The same closure a @step model records (relative to the model folder).
-        # Code and declared data inputs keep the hashes captured during the body.
-        source_closure = capture_runtime_closure(
-            modules_before_load,
-            spec.script_path,
-            base=spec.script_path.parent,
-            executed_files=executed_files,
-            discovered_inputs=read_files,
-            executed_hashes=executed_hashes.hashes,
-        )
         # The product IS the .dxf: the run always writes it — the sibling by
         # default, `-o` renames — and the viewer parses that file directly.
         output_path = spec.dxf_path
@@ -655,13 +649,14 @@ def _run_script_generator_body(
         # clause 4 is vacuous). The children its body composed -- a flat pattern of
         # `bracket()` -- are pinned from the calls, so a child's new geometry makes
         # the drawing stale like any parent.
-        _write_drawing_record(
-            spec, output_path, source_closure=source_closure, child_trees=frame.child_trees()
-        )
+        _write_drawing_record(spec, output_path, source_closure=source_closure, child_trees=child_trees)
     if generated_scene is not None and source_closure is not None:
         generated_scene.source_closure_hash = source_closure.closure_hash
         generated_scene.source_closure_files = source_closure.files
         generated_scene.source_closure_file_hashes = dict(getattr(source_closure, "file_hashes", None) or {})
+        generated_scene.source_closure_names = dict(getattr(source_closure, "names", None) or {})
+        generated_scene.source_closure_wholes = dict(getattr(source_closure, "wholes", None) or {})
+        generated_scene.source_closure_own = dict(getattr(source_closure, "own", None) or {})
         generated_scene.source_closure_constants = dict(source_closure.constants)
     if model_format == "dxf":
         written = spec.dxf_path
@@ -670,6 +665,20 @@ def _run_script_generator_body(
                 f"{_display_path(spec.script_path)} did not write {_display_path(written)}"
             )
     return generated_scene if model_format == "step" else None
+
+
+def _own_outputs(spec: EntrySpec, model_format: str, entry_name: str) -> list[Path]:
+    """Every file a build of this model publishes beside its source: the outputs
+    its decorators declare and, beside a written STEP, its sidecar -- whether or
+    not this build writes one, since an annotation refresh can add it later."""
+    from cadgen.metadata import declared_output_paths
+
+    outputs = declared_output_paths(spec.script_path, function=entry_name)
+    if model_format == "step" and spec.step_path is not None and spec.step_output:
+        from cadgen._internal.source_sidecar import source_sidecar_path
+
+        outputs.append(source_sidecar_path(spec.step_path))
+    return outputs
 
 
 def _is_git_lfs_pointer(step_path: Path) -> bool:

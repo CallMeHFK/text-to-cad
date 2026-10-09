@@ -14,6 +14,7 @@ from unittest import mock
 from cadgen.daemon import server
 from cadgen.daemon.broker import Broker
 from cadgen.daemon.jobs import JobLedger
+from cadgen.viewer.build_progress import build_progress_snapshot
 from cadgen.viewer.preview import preview_status
 from tests.python.support.store_fixtures import seed_result
 from tests.python.support.tmp_root import generated_cad_directory
@@ -117,7 +118,13 @@ class CoalescedPreviewRequests(unittest.TestCase):
         # Editing status remains an event/object read, even after completion.
         with mock.patch("cadgen.store.records.read_record", side_effect=AssertionError("model record read")), \
              mock.patch("cadgen.store.records.model_for_output", side_effect=AssertionError("output record read")):
-            return preview_status(str(self.root), str(self.output), jobs=self.ledger.snapshot())
+            return preview_status(str(self.output), jobs=self.ledger.snapshot())
+
+    def published(self, request_id, kind):
+        """The tree a request published for the output, as the ledger holds it: ``previews`` or ``savedResults``."""
+        job = next(job for job in self.ledger.snapshot() if job["id"] == request_id)
+        entry = (job.get(kind) or {}).get(str(self.output)) or {}
+        return entry.get("tree")
 
     def wait_until(self, predicate, message):
         deadline = time.monotonic() + 3
@@ -163,7 +170,7 @@ class CoalescedPreviewRequests(unittest.TestCase):
                 # must not briefly replace the visible producer before claim.
                 before_claim = self.feed()
                 self.assertEqual(before_claim["request"], producer_id)
-                self.assertEqual(before_claim["preview"]["tree"], self.tree)
+                self.assertEqual(self.published(producer_id, "previews"), self.tree)
                 allow_claim.set()
                 self.assertTrue(follower_attached.wait(3))
                 self.assertFalse(follower_future.done())
@@ -177,10 +184,7 @@ class CoalescedPreviewRequests(unittest.TestCase):
                 self.assertFalse(producer_future.done())
                 self.assertFalse(follower_future.done(), "STEP publication alone cannot finish a follower")
                 self.assertEqual(len(follower_conn.frames), 1)
-                if exit_code == 0:
-                    self.assertEqual(self.feed()["saved"]["tree"], self.tree)
-                else:
-                    self.assertNotIn("saved", self.feed())
+                self.assertEqual(self.published(producer_id, "savedResults"), self.tree if exit_code == 0 else None)
                 worker.allow_exit.set()
                 producer_future.result(timeout=3)
                 follower_future.result(timeout=3)
@@ -189,7 +193,7 @@ class CoalescedPreviewRequests(unittest.TestCase):
                 worker.allow_save.set()
                 worker.allow_exit.set()
 
-        worker_pool.acquire.assert_called_once_with(str(self.model), dependency=True)
+        worker_pool.acquire.assert_called_once_with(str(self.model), dependency=True, on_start=mock.ANY)
         self.assertEqual(follower_conn.frames[-1], {"exit": exit_code})
         self.assertEqual(len(follower_conn.frames), 2)
         producer, follower = self.ledger.snapshot()
@@ -207,13 +211,20 @@ class CoalescedPreviewRequests(unittest.TestCase):
         self.assertEqual(status["state"], "failed" if exit_code else "done")
         if exit_code:
             self.assertEqual(status["error"], "save refused")
+            # The follower is the latest job listed for the output; it carries the
+            # owner's reason, so the viewer never falls back to the generic sentence.
+            self.assertEqual(follower["error"], "save refused")
+            snapshot = build_progress_snapshot(self.output, jobs=self.ledger.snapshot())
+            self.assertEqual(snapshot["failed"]["error"], "save refused")
+        else:
+            self.assertIsNone(follower["error"])
         self.ledger.observe(worker.event(99, preview={"output": str(self.output), "tree": "late"}))
         self.assertEqual(self.feed(), status, "Late producer events must remain fenced after completion")
         # A later real request must still advance ordering despite the retained
         # follower and all of the older producer's preview/saved events.
         latest = self.ledger.start(tool="run", subject=str(self.model), store_root=str(self.store))
         self.assertEqual(self.feed()["request"], latest["id"])
-        self.assertNotIn("preview", self.feed())
+        self.assertIsNone(self.published(latest["id"], "previews"))
 
     def test_successful_follower_keeps_preview_and_waits_for_full_owner_completion(self):
         self.exercise_follower(exit_code=0)

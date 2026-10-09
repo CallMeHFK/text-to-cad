@@ -53,8 +53,8 @@ def ensure_step_topology_artifact(
     surface it as opt-in diagnostics without adding overhead when `debug` is None."""
     started = time.perf_counter() if debug is not None else None
     try:
-        # Every CLI that needs a STEP package comes through here -- inspect, snapshot -- and
-        # the rebuild below can be the same multi-minute generator `cad gen` runs. It used to
+        # Every reader that needs a STEP's selector topology comes through here -- read_scene,
+        # selection snapshots -- and the extraction below can take minutes on a large model. It used to
         # report to the VIEWER only, so a terminal caller watched a silent
         # process while an open viewer showed the phases. The progress line is built here, at
         # the one shared entry point, rather than asked of every caller.
@@ -211,10 +211,10 @@ def _entry_spec_for_target(
     mesh_tolerance: float | None,
     mesh_angular_tolerance: float | None,
 ) -> EntrySpec:
-    # DOCUMENTS-ONLY (design/pose-animation-split.md, CLI/doors follow-on): a
-    # target is the document. The artifact resolver used to walk back to a
-    # `.py` generator and re-run it here, which is how a render could contain a
-    # build; a stale document is now refused at the door instead.
+    # DOCUMENTS-ONLY (README law 7): a target is the document. The artifact
+    # resolver used to walk back to a `.py` generator and re-run it here, which
+    # is how a render could contain a build; a stale document is now refused at
+    # the door instead.
     # Resolved ONCE, here: every lookup below (the bytes hash memo, the view
     # directory, the compile job) keys on this path, and a relative path from a
     # symlinked cwd (macOS /tmp) must name the same document as its absolute form.
@@ -266,10 +266,9 @@ def _assembly_topology_artifact(
             )
 
     if descriptor is not None:
-        # COMPOSED selector artifact (design/incremental-generation.md,
-        # Phase 3): every ``components/<cid>.glb`` already embeds that part's
-        # complete topology tables, and both selector consumers (inspect,
-        # snapshot) funnel through
+        # COMPOSED selector artifact: every ``components/<cid>.glb`` already
+        # embeds that part's complete topology tables, and both selector
+        # consumers (inspect, snapshot) funnel through
         # ``assembly_lookup.index_with_assembly_occurrences``, which merges
         # those tables into the index per occurrence. So the whole-model
         # ``topology.glb`` sidecar is redundant: return the assembly.json as the

@@ -17,8 +17,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "GeometryError", "GeometryIssue", "ClosestPoints", "MassProperties",
-    "closest_points", "overlap_volume", "topology_errors", "boundary_edges",
-    "self_intersections", "mass_properties",
+    "closest_points", "overlap_volume", "is_sound", "topology_errors",
+    "boundary_edges", "self_intersections", "mass_properties",
 ]
 
 Matrix3 = tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
@@ -80,6 +80,17 @@ def _cast(shape):
     from build123d import Compound
 
     return Compound.cast(shape)
+
+
+def _items(collection) -> list:
+    """An OCCT list's elements, taking exactly ``Size()`` from its iterator.
+
+    Exhausting the binding's iterator ends in a C++ exception that pybind
+    turns into StopIteration; unwinding it costs ~2.4 ms on macOS arm64, which
+    a check paid once per issue, per status list, per sub-shape.
+    """
+    iterator = iter(collection)
+    return [next(iterator) for _ in range(collection.Size())]
 
 
 def _properties(shape):
@@ -207,6 +218,53 @@ def overlap_volume(a: Solid, b: Solid) -> float:
         raise GeometryError(f"intersection computation failed: {exc}") from exc
 
 
+def _verdict_input(shape):
+    """The native shape a pass/fail verdict is about, or None for a null shape.
+
+    Unlike the measurements, ``is_sound`` accepts null and empty geometry: a
+    gate in a model body must not crash on an empty intermediate.
+    """
+    from build123d import Shape
+
+    if not isinstance(shape, Shape):
+        raise TypeError(f"expected Shape, got {type(shape).__name__}")
+    wrapped = shape._wrapped
+    return None if wrapped is None or wrapped.IsNull() else wrapped
+
+
+def is_sound(shape: Shape) -> bool:
+    """The boolean kernel's argument check (``BRepAlgoAPI_Check``) passes the
+    shape: BRepCheck-valid, no self-intersections, no too-small edges, and an
+    argument type a boolean accepts. This is what a fuse or cut demands of an
+    operand, and it can be expensive. A null or empty shape is not sound: the
+    kernel rejects it as an argument type (``BOPAlgo_BadType``), a verdict,
+    not an error. A check the kernel could not complete raises
+    ``GeometryError``. Closure, solid count and signed volume are separate
+    questions; the faulty entities are ``self_intersections``'s.
+    """
+    from OCP.BOPAlgo import BOPAlgo_CheckStatus
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Check
+
+    wrapped = _verdict_input(shape)
+    if wrapped is None:
+        return False  # BRepAlgoAPI_Check on a null shape: BOPAlgo_BadType
+    inconclusive = (BOPAlgo_CheckStatus.BOPAlgo_CheckUnknown, BOPAlgo_CheckStatus.BOPAlgo_OperationAborted)
+    try:
+        # The constructor performs the check (self-intersections and small
+        # edges both on, the kernel's defaults); Perform() would run it again.
+        checker = BRepAlgoAPI_Check(wrapped)
+        if checker.HasErrors():
+            raise GeometryError("boolean argument checker failed")
+        for result in _items(checker.Result()):
+            if result.GetCheckStatus() in inconclusive:
+                raise GeometryError(f"boolean argument check was inconclusive: {result.GetCheckStatus().name}")
+        return bool(checker.IsValid())
+    except GeometryError:
+        raise
+    except Exception as exc:
+        raise GeometryError(f"soundness check failed: {exc}") from exc
+
+
 def topology_errors(shape: Shape) -> tuple[GeometryIssue, ...]:
     """BRepCheck topology/geometry faults, with affected owned entities.
 
@@ -234,7 +292,7 @@ def topology_errors(shape: Shape) -> tuple[GeometryIssue, ...]:
                 continue
             seen = set()
             def collect(statuses, context=None):
-                for status in statuses:
+                for status in _items(statuses):
                     key = (int(status), entities.FindIndex(context) if context is not None else 0)
                     if status != BRepCheck_NoError and key not in seen:
                         seen.add(key)
@@ -290,16 +348,16 @@ def self_intersections(shape: Shape) -> tuple[GeometryIssue, ...]:
     wrapped = _wrapped(shape)
     try:
         private = _copy(wrapped)
+        # This constructor performs the check; Perform() would run it again.
         checker = BRepAlgoAPI_Check(private, False, True)
-        checker.Perform()
         if checker.HasErrors():
             raise GeometryError("self-intersection checker failed")
         issues = []
-        for result in checker.Result():
+        for result in _items(checker.Result()):
             status = result.GetCheckStatus()
             if status != BOPAlgo_CheckStatus.BOPAlgo_SelfIntersect:
                 raise GeometryError(f"self-intersection check was inconclusive: {status.name}")
-            entities = list(result.GetFaultyShapes1()) + list(result.GetFaultyShapes2())
+            entities = _items(result.GetFaultyShapes1()) + _items(result.GetFaultyShapes2())
             issues.append(GeometryIssue(status.name, tuple(_cast(s) for s in entities or [private])))
         if not checker.IsValid() and not issues:
             raise GeometryError("self-intersection check failed without diagnostics")

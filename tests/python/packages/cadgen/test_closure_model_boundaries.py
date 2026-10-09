@@ -32,16 +32,12 @@ def right():
 
 class ModelClosureBoundaries(unittest.TestCase):
     def setUp(self):
-        from cadgen.store.closure import forget_model_files
-
         scratch = generated_cad_directory(prefix="closure-model-boundaries-")
         self.addCleanup(scratch.cleanup)
         self.root = Path(scratch.name)
         env = mock.patch.dict(os.environ, {"CADGEN_CACHE_DIR": str(self.root / "store")})
         env.start()
         self.addCleanup(env.stop)
-        forget_model_files()
-        self.addCleanup(forget_model_files)
         self.family = self.write("family.py", FAMILY)
 
     def geometry_tree(self, label):
@@ -82,7 +78,7 @@ class ModelClosureBoundaries(unittest.TestCase):
         return reference
 
     def test_imported_model_names_from_a_multi_model_file_are_result_edges(self):
-        from cadgen.store.closure import is_model_file, static_closure
+        from cadgen.store.closure import static_closure
 
         cases = (
             ("from family import left", "return left()"),
@@ -93,7 +89,6 @@ class ModelClosureBoundaries(unittest.TestCase):
         # Result-only classification is AST work and must not import the model
         # merely to choose one of its declarations.
         with mock.patch("cadgen.metadata.imported_model", side_effect=AssertionError("model imported")):
-            self.assertTrue(is_model_file(self.family))
             for imports, body in cases:
                 with self.subTest(imports=imports):
                     closure = static_closure(self.parent(imports, body))
@@ -126,14 +121,18 @@ class ModelClosureBoundaries(unittest.TestCase):
         self.assertEqual(statics.source_files, (helper,))
         closure = build_closure(parent, executed=self.executed(parent, self.family, helper),
                                 children=[str(self.family) + "::left"])
-        self.assertEqual(closure.files, ("parent.py", "utility.py"))
+        self.assertEqual(closure.files, ("!family/__init__.py", "!utility/__init__.py",
+                                         "family.py", "parent.py", "utility.py"))
+        self.assertTrue(closure.shas["family.py"].startswith("islice1:"), "the child, by what its import runs")
 
     def test_multi_model_constants_keep_value_dependencies(self):
         from cadgen.store.closure import build_closure, changed_constant
 
         parent = self.parent("from family import left, WIDTH")
         closure = build_closure(parent, executed={})
-        self.assertEqual(closure.files, ("parent.py",))
+        self.assertEqual(closure.files, ("!family/__init__.py", "family.py", "parent.py"))
+        self.assertTrue(closure.shas["family.py"].startswith("islice1:"))
+        self.assertEqual(closure.names["family.py"], (), "the constant is a value edge, not import-time code")
         self.assertEqual(set(closure.constants), {"family.py"})
         self.assertEqual(set(closure.constants["family.py"]), {"WIDTH"})
         self.family.write_text(FAMILY.replace("WIDTH = 4", "WIDTH = 5"), encoding="utf-8")
@@ -148,12 +147,12 @@ class ModelClosureBoundaries(unittest.TestCase):
         self.assertEqual(static_closure(parent).child_models, ())
         closure = build_closure(parent, executed=self.executed(parent, self.family, helper),
                                 children=[str(self.family) + "::left"])
-        self.assertEqual(closure.files, ("family.py", "parent.py", "utility.py"))
+        self.assertEqual(closure.files, ("!utility/__init__.py", "family.py", "parent.py", "utility.py"))
         # A helper reached directly by the parent belongs to both closures.
         parent = self.parent("from utility import helper", body="import importlib\nreturn importlib.import_module('family').left()")
         closure = build_closure(parent, executed=self.executed(parent, self.family, helper),
                                 children=[str(self.family) + "::left"])
-        self.assertEqual(closure.files, ("family.py", "parent.py", "utility.py"))
+        self.assertEqual(closure.files, ("!utility/__init__.py", "family.py", "parent.py", "utility.py"))
 
     def test_dynamic_helper_edit_is_stale_even_after_the_child_rebuilds_identically(self):
         from cadgen.store.gate import stale
@@ -219,7 +218,8 @@ class ModelClosureBoundaries(unittest.TestCase):
         left = self.record(self.family, "left", tree=child_tree)
         script = self.parent("import family as parts", body="return parts.left()")
         parent = self.record(script, "parent", tree=child_tree, children=[(left, child_tree)])
-        self.assertEqual(read_record(parent)["closure"]["files"], ["parent.py"])
+        self.assertEqual(read_record(parent)["closure"]["files"], ["!family/__init__.py", "family.py", "parent.py"])
+        self.assertTrue(read_record(parent)["closure"]["shas"]["family.py"].startswith("islice1:"))
         self.assertEqual(read_record(parent)["children"], [{"model": left, "tree": child_tree}])
         self.family.write_text(FAMILY.replace("WIDTH = 4", "WIDTH = 5"), encoding="utf-8")
         self.assertTrue(stale(parent).stale, "the called child's whole-file source is stale until rebuilt")
@@ -230,13 +230,17 @@ class ModelClosureBoundaries(unittest.TestCase):
         from cadgen.store.closure import static_closure
 
         (self.root / "parts").mkdir()
-        self.write("parts/__init__.py", "")
+        package = self.write("parts/__init__.py", "")
         family = self.write("parts/family.py", FAMILY)
         imports = "from parts import family as models"
         with mock.patch("cadgen.metadata.imported_model", side_effect=AssertionError("model imported")):
             control = static_closure(self.parent(imports, body="return models.left()"))
         self.assertEqual(control.child_models, (family,))
-        self.assertEqual(control.source_files, ())
+        # Importing the submodule executes the package: its preamble is a source
+        # edge of the importer, sliced to nothing beyond that preamble.
+        self.assertEqual(control.source_files, (package,))
+        # ...with the submodule's name marked unbound: a binding added later wins.
+        self.assertEqual(control.names, {package: ("family",)})
         for expression in (
             "models.helper()",
             "getattr(models, 'helper')()",
@@ -262,7 +266,8 @@ class ModelClosureBoundaries(unittest.TestCase):
         parent = self.parent("from family import left", body="from family import helper\nreturn left()")
         closure = build_closure(parent, executed=self.executed(parent, self.family),
                                 children=[str(self.family) + "::left"])
-        self.assertEqual(closure.files, ("family.py", "parent.py"))
+        self.assertEqual(closure.files, ("!family/__init__.py", "family.py", "parent.py"))
+        self.assertTrue(closure.shas["family.py"].startswith("ast1:"), "taken as source: whole")
 
     def test_a_grandchilds_files_belong_to_the_child_that_calls_it(self):
         """Ownership is transitive, and the whole subtree executes in this process.
@@ -307,7 +312,19 @@ class ModelClosureBoundaries(unittest.TestCase):
 
         closure = build_closure(root, executed=executed, children=[str(middle) + "::middle"])
 
-        self.assertEqual(closure.files, ("root.py",))
+        # The subtree's module bodies ran here, so each is in by what its import
+        # runs; their model bodies and the helper functions only those call are not.
+        self.assertEqual(closure.files, ("!helper_lib/__init__.py", "!leaf/__init__.py", "!middle/__init__.py",
+                                         "helper_lib.py", "leaf.py", "middle.py", "root.py"))
+        self.assertTrue(closure.shas["middle.py"].startswith("islice1:"))
+        self.assertTrue(closure.shas["leaf.py"].startswith("islice1:"))
+        self.assertEqual(closure.names["helper_lib.py"], ())
+        from cadgen.store.closure import current_closure_hash
+
+        (self.root / "helper_lib.py").write_text("SPAN = 4\n\ndef span():\n    return SPAN * 2\n", encoding="utf-8")
+        self.assertEqual(current_closure_hash(root, closure.files, closure.names, shas=closure.shas,
+                                              wholes=closure.wholes), closure.hash,
+                         "a geometry edit two levels down reaches the root only through its pin")
 
     def test_exact_function_pins_and_whole_file_sibling_invalidation_remain(self):
         from cadgen.store.closure import build_closure

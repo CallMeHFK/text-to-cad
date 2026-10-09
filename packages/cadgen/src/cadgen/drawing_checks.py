@@ -20,8 +20,11 @@ from typing import Iterable
 
 # Layer intent is decided by WHOLE tokens of the layer name (split on
 # non-alphanumerics), never substrings — "PREFORM" must not match "ref".
-# This is the single classifier: drawing_render (and the viewer's parseDxf)
-# follow the same token rule so validation, snapshots, and rendering agree.
+# This is the single classifier, and the only reader of a layer's NAME in
+# cadgen: rendering a drawing (cadgen.drawing_payload) draws every layer the
+# same way, in the pens the file declares, so intent is a fabrication question
+# — what must close, what may stay open, what a cutting service is being asked
+# to do — and it is answered here alone.
 _LAYER_INTENT_BY_TOKEN = {
     # An explicit cut token WINS: a layer called CUT_SECTION is a cut path whose name happens
     # to mention a view, and classifying it as annotation would skip the closure check on the
@@ -354,8 +357,18 @@ def _open_chain_findings(open_curves_by_layer: dict[str, list]) -> list[DrawingF
     return findings
 
 
-def validate_drawing_document(document: object) -> list[DrawingFinding]:
-    """Run all drawing checks against an ezdxf document; returns the findings."""
+def validate_drawing_document(document: object, *, drawing: bool | None = None) -> list[DrawingFinding]:
+    """Run all drawing checks against an ezdxf document; returns the findings.
+
+    ``drawing=True`` states that the caller BUILT a drawing, so the cut-profile
+    checks do not apply. Inference is for a file that arrived from somewhere
+    else: it reads the apparatus and needs a dimension or a viewport before it
+    will believe a document is a document, which is right for a stranger's DXF
+    and wrong for a producer that knows. ``@eng_drawing`` renders orthographic
+    views whose outlines are open by nature, so before its author had written a
+    dimension every sheet with a fillet on it was graded as a broken laser-cut
+    file and no PDF was written.
+    """
     findings: list[DrawingFinding] = []
     header = getattr(document, "header", None)
     units = 0
@@ -375,7 +388,10 @@ def validate_drawing_document(document: object) -> list[DrawingFinding]:
     # A drawing is not a cut layout, and the file says which it is. Closure is required of cut
     # paths; a plan-and-sections drawing has none, and failing it for that is what made issue
     # #246's workshop drawing ungeneratable.
-    is_drawing, drawing_evidence = document_is_drawing(document)
+    if drawing:
+        is_drawing, drawing_evidence = True, "declared a drawing by its producer"
+    else:
+        is_drawing, drawing_evidence = document_is_drawing(document)
     if is_drawing:
         findings.append(
             DrawingFinding(

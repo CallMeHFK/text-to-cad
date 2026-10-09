@@ -4,7 +4,8 @@ set -euo pipefail
 # Assert the cadgen wheel actually contains its runtime assets.
 #
 # cadgen ships JavaScript it executes (Node builders, the snapshot browser bundle, the
-# CAD Viewer's built client) and non-Python data its server reads (collation.json).
+# CAD Viewer's built client), the native file tracer every build loads, and non-Python
+# data its server reads (collation.json).
 # Those arrive through `[tool.setuptools.package-data]`, which is exactly the kind of
 # declaration that fails QUIETLY: a glob that does not match nested files produces a
 # wheel that imports fine, passes every Python test, and then cannot build a DXF preview
@@ -74,13 +75,24 @@ REQUIRED=(
   "cadgen/step_topology_artifact.py"
   "cadgen/_internal/node_resolve_register.mjs"
   "cadgen/_internal/node_resolve_hooks.mjs"
-  "cadgen/_runtime/node/dxf-mesh.mjs"
   "cadgen/_runtime/node/mesh-export.mjs"
   "cadgen/_runtime/node/package.json"
   "cadgen/_runtime/node/THIRD_PARTY_LICENSES.txt"
   "cadgen/_runtime/browser/snapshot-render.js"
   "cadgen/_runtime/browser/render.html"
   "cadgen/_runtime/viewer/index.html"
+  # CAD in an agent host: the server `cadgen mcp` runs and the one page it serves.
+  "cadgen/cli/mcp.py"
+  "cadgen/mcp/server.py"
+  "cadgen/mcp/tunnel.py"
+  "cadgen/_runtime/mcp/index.html"
+  # The file tracer every build loads, one per platform: a wheel missing one builds
+  # nothing on that platform.
+  "cadgen/_runtime/native/filetrace-macos-aarch64.dylib"
+  "cadgen/_runtime/native/filetrace-macos-x86_64.dylib"
+  "cadgen/_runtime/native/filetrace-linux-x86_64.so"
+  "cadgen/_runtime/native/filetrace-linux-aarch64.so"
+  "cadgen/_runtime/native/filetrace-windows-x86_64.dll"
 )
 
 echo "Building cadgen wheel for content check..."

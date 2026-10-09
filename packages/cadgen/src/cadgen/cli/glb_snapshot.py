@@ -3,15 +3,16 @@
 A GENERATED CLI over :func:`cadgen.glb.snapshot`. There is no parser here on
 purpose: everything the command accepts is derived from the verb function's
 signature by :mod:`cadgen._internal.cli_from_function`, so a flag cannot drift
-from a parameter (design/format-doors.md). Which input kinds the door accepts
+from a parameter (README law 6). Which input kinds the door accepts
 is declared once, beside the verb, in
 :data:`cadgen._internal.snapshot_door.DOOR_KINDS`.
 
 The mesh half of ``cadgen step snapshot``, re-homed: GLB is a format with a
 door (``cadgen glb build``), so its snapshot belongs behind the same door. Its
-verb is the MESH shape — normal-CAD display settings, but no kinematics,
-section mode or selection. ``--display`` accepts mesh-neutral modes; options
-that require CAD topology are absent from ``--help``.
+verb is the MESH shape: no kinematics, section mode or selection flags.
+``--display`` takes ``solid`` or ``render``; the display settings that describe a
+CAD model (edges, clip, exploded, the edge-made modes, hidden/off surfaces) are
+refused by name rather than ignored.
 """
 
 from __future__ import annotations
