@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import ntpath
 import os
 import shutil
 import subprocess
@@ -19,7 +20,7 @@ from urllib.parse import quote
 from cadgen._internal.picker import FilePicker
 from cadgen.mcp.protocol import RequestContext, RpcError
 from cadgen.viewer.recents import RecentStore
-from cadgen.mcp.server import Server
+from cadgen.mcp.server import Server, local_path
 from cadgen.mcp.tunnel import MAX_REPLY_BYTES
 from cadgen.mcp.ui import AppPage
 
@@ -34,6 +35,12 @@ STL = b"solid t\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nver
 MESSAGE_BOUND = MAX_REPLY_BYTES * 4 // 3 + 4096
 # What the page's client sends with every POST: the viewer refuses one without its header.
 GUARDED = {"x-cadgen-viewer": "1", "content-type": "application/json"}
+
+
+def as_codex_spells_it(path: str) -> str:
+    """A local file's path as Codex's file tree hands it to ``cad_file``: on Windows, forward slashes
+    and a slash before the drive (``/C:/Users/...``); elsewhere, the path itself."""
+    return "/" + path.replace("\\", "/") if os.name == "nt" else path
 
 
 def offer_an_update(test: unittest.TestCase) -> None:
@@ -109,6 +116,19 @@ class _Session(unittest.TestCase):
         return viewer
 
 
+    def opens_later(self, view: str, surface: str, model: str, *, after: float = 0.3) -> threading.Thread:
+        """A view the host is still loading: it syncs for the first time ``after`` seconds from now, then
+        answers one capture."""
+
+        def load() -> None:
+            time.sleep(after)
+            self.poll_as(view, surface, 1, model).join(10)
+
+        loading = threading.Thread(target=load, daemon=True)
+        loading.start()
+        return loading
+
+
 class TabServerTest(_Session):
     """Codex: tab surfaces the agent opens once and then drives."""
 
@@ -119,12 +139,12 @@ class TabServerTest(_Session):
                        if "entrypoints" in value.get("openai/ui", {})}
         self.assertEqual(entrypoints, {"cad_home": "global", "cad_tab": "thread", "cad_file": "file"})
         agent = {name for name, value in meta.items() if value.get("ui", {}).get("visibility") != ["app"]}
-        self.assertEqual(agent, {"cad_open", "cad_show", "cad_view", "cad_screenshot", "cad_analytics"})
+        self.assertEqual(agent, {"cad_open", "cad_show", "cad_view", "cad_screenshot", "cad_telemetry"})
         # The page's own: its sync, its answer to a capture, and the viewer's routes, which carry the rest.
         page = {name for name, value in meta.items() if value.get("ui", {}).get("visibility") == ["app"]} - set(entrypoints)
         self.assertEqual(page, {"cad_sync", "cad_capture_reply", "cad_http"})
-        # All but one read: cad_analytics turns the person's analytics off when they ask.
-        self.assertEqual([name for name, tool in tools.items() if not tool["annotations"]["readOnlyHint"]], ["cad_analytics"])
+        # All but one read: cad_telemetry turns the person's telemetry off when they ask.
+        self.assertEqual([name for name, tool in tools.items() if not tool["annotations"]["readOnlyHint"]], ["cad_telemetry"])
         uri = tools["cad_home"]["_meta"]["ui"]["resourceUri"]
         self.assertRegex(uri, r"^ui://cad/[0-9a-f]{16}/app\.html$")
         self.assertEqual(tools["cad_open"]["_meta"]["ui"]["resourceUri"], uri)
@@ -150,7 +170,8 @@ class TabServerTest(_Session):
         self.assertTrue(refused["isError"])
         self.assertIn("is not an absolute path", refused["content"][0]["text"])
         # A file the host hands over is shown alone: the host's own file tree is its navigation.
-        handed = self.launch("cad_file", {"file": {"name": "loose.stl", "resourceUri": "x"}}, {"openai/resource": {"path": self.loose}})
+        handed = self.launch("cad_file", {"file": {"name": "loose.stl", "resourceUri": "codex-resource://app-1"}},
+                             {"openai/resource": {"path": as_codex_spells_it(self.loose)}})
         self.assertEqual((handed["model"], handed["surface"]), (self.loose, "file"))
         # A launch adds nothing to the library: the view does, once the model is on screen.
         self.assertEqual(self.server.recents.list(), [])
@@ -198,6 +219,15 @@ class TabServerTest(_Session):
         self.assertEqual(shot["content"][0], {"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"})
         self.assertEqual(shot["structuredContent"], {"view": "v1", "model": model})
 
+    def test_a_capture_right_after_cad_open_waits_for_the_tab_to_open(self) -> None:
+        # An agent opens a tab and captures it at once, before the host has loaded it: the capture
+        # waits for its first sync rather than saying no viewer is open.
+        self.call("cad_open", {"path": self.bracket})
+        self.opens_later("v1", "agent", self.bracket)
+        shot = self.call("cad_screenshot")
+        self.assertNotIn("isError", shot)
+        self.assertEqual(shot["structuredContent"], {"view": "v1", "model": self.bracket})
+
     def test_the_tunnel_serves_the_viewer_by_absolute_path_and_keeps_the_hosts_effects_the_hosts(self) -> None:
         # A model under a hidden folder, as an agent's worktree is: shown all the same.
         hidden = self.tmp / "elsewhere" / ".worktree"
@@ -226,7 +256,7 @@ class TabServerTest(_Session):
         png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(64)).decode("ascii")
         [entry] = self.http("POST", "/__cad/recents", {"action": "thumbnail", "path": self.bracket, "png": png})[1]["recents"]
         self.assertEqual(self.http("GET", f"/__cad/thumbnail?name={entry['thumbnail']}"), (200, base64.b64decode(png)))
-        # The home's Open, and the person's answer on the analytics card: the CAD app's own.
+        # The home's Open, and the person's answer on the app menu's Share usage stats: the CAD app's own.
         with mock.patch.object(FilePicker, "choose", return_value=self.loose):
             self.assertEqual(self.http("POST", "/__cad/pick", {}), (200, {"path": self.loose.replace(os.sep, "/")}))
         with mock.patch.object(self.server.analytics, "choose", return_value={}) as answered:
@@ -385,7 +415,7 @@ class InlineServerTest(_Session):
         tools = {tool["name"]: tool for tool in self.server.handle("tools/list", {}, None)["tools"]}
         agent = {name for name, tool in tools.items() if tool.get("_meta", {}).get("ui", {}).get("visibility") != ["app"]}
         # A chat shows files: no home.
-        self.assertEqual(agent, {"cad_show", "cad_view", "cad_screenshot", "cad_analytics"})
+        self.assertEqual(agent, {"cad_show", "cad_view", "cad_screenshot", "cad_telemetry"})
         uri = tools["cad_show"]["_meta"]["ui"]["resourceUri"]
         self.assertFalse(any(key.startswith("openai/") for tool in tools.values() for key in tool.get("_meta", {})))
         self.assertEqual((tools["cad_view"]["inputSchema"]["required"], tools["cad_screenshot"]["inputSchema"]["required"]), (["view"], ["view"]))
@@ -421,6 +451,22 @@ class InlineServerTest(_Session):
         self.assertIn("not open", self.call("cad_view", {"view": view})["content"][0]["text"])
 
 
+    def test_a_capture_right_after_cad_show_waits_for_the_card_and_says_when_it_never_opens(self) -> None:
+        view = self.launch("cad_show", {"path": self.bracket})["view"]
+        self.opens_later(view, "inline", self.bracket)
+        self.assertEqual(self.call("cad_screenshot", {"view": view})["content"][0]["data"], "iVBORw0KGgo=")
+        # A card the chat never draws (the person has not allowed it, or it is collapsed) is said so, not "closed".
+        unseen = self.launch("cad_show", {"path": self.loose})["view"]
+        with mock.patch("cadgen.mcp.server.OPENING_SECONDS", 0.2):
+            shot = self.call("cad_screenshot", {"view": unseen})
+        self.assertTrue(shot["isError"])
+        self.assertIn("has not opened yet", shot["content"][0]["text"])
+        # A token no cad_show of this server named is not waited for.
+        started = time.monotonic()
+        self.assertIn("not open", self.call("cad_screenshot", {"view": "cad-9-unknown"})["content"][0]["text"])
+        self.assertLess(time.monotonic() - started, 1.0)
+
+
 class TextServerTest(_Session):
     """A client that renders no MCP Apps: cad_show answers with the model's link in the CAD Viewer."""
 
@@ -429,7 +475,7 @@ class TextServerTest(_Session):
 
     def test_cad_show_links_the_model_in_this_machines_viewer(self) -> None:
         tools = self.server.handle("tools/list", {}, None)["tools"]
-        self.assertEqual([(tool["name"], "_meta" in tool) for tool in tools], [("cad_show", False), ("cad_analytics", False)])
+        self.assertEqual([(tool["name"], "_meta" in tool) for tool in tools], [("cad_show", False), ("cad_telemetry", False)])
         self.assertIn("cannot show CAD views", self.initialized["instructions"])
         shown = self.call("cad_show", {"path": self.bracket})
         # Text alone: Claude Code shows a result's structured content in place of its text.
@@ -470,6 +516,26 @@ class TextServerTest(_Session):
             server = Server(page=AppPage(self.tmp / "app"), recents=RecentStore(self.tmp / "other"))
             server.handle("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": self.client}, None)
         self.assertIn("ui", {tool["name"]: tool for tool in server.handle("tools/list", {}, None)["tools"]}["cad_show"]["_meta"])
+
+
+class LocalPathTest(unittest.TestCase):
+    def test_windows_reads_a_drive_path_however_a_host_spells_it(self) -> None:
+        # Codex's file tree names a file /C:/Users/...; a file URI names the same path. Windows reads
+        # either as a folder C: on the current drive until the slash before the drive goes.
+        for spelled in ("/C:/Users/me/parts/bracket.step", "file:///C:/Users/me/parts/bracket.step",
+                        "file:///c%3A/Users/me/parts/bracket.step", "C:/Users/me/parts/bracket.step",
+                        "C:\\Users\\me\\parts\\bracket.step"):
+            path = local_path(spelled, windows=True)
+            self.assertTrue(ntpath.isabs(path), spelled)
+            self.assertEqual(ntpath.normcase(ntpath.normpath(path)), "c:\\users\\me\\parts\\bracket.step", spelled)
+        self.assertEqual(local_path("file:///C:/My%20Parts/a.step", windows=True), "C:/My Parts/a.step")
+        # A share keeps both its slashes.
+        self.assertEqual(local_path("//server/share/a.step", windows=True), "//server/share/a.step")
+
+    def test_posix_keeps_every_path_as_named(self) -> None:
+        # On POSIX /C:/x is a real absolute path: a folder named C: at the root.
+        self.assertEqual(local_path("/C:/x/a.step", windows=False), "/C:/x/a.step")
+        self.assertEqual(local_path("file:///home/me/a%20b.step", windows=False), "/home/me/a b.step")
 
 
 class ImportBudgetTest(unittest.TestCase):
@@ -589,6 +655,37 @@ class TunnelBodyTest(unittest.TestCase):
             reply = call(path, method)
             self.assertNotIn("encoding", reply)
             self.assertEqual(base64.b64decode(reply["body"]), body)
+
+    def test_a_long_bodys_later_parts_are_cut_from_it_not_produced_again(self) -> None:
+        from cadgen.mcp.tunnel import MAX_REPLY_BYTES, ViewerTunnel
+
+        body = os.urandom(2 * MAX_REPLY_BYTES + 5)
+        runs = []
+
+        class Routes:
+            def handle(self, request, response) -> None:
+                runs.append(request.path)
+                response.send_bytes(200, body, "application/octet-stream")
+
+        tunnel = ViewerTunnel()
+
+        def part(first: int, etag: str = "") -> dict:
+            headers = {"range": f"bytes={first}-{first + MAX_REPLY_BYTES - 1}", **({"if-range": etag} if etag else {})}
+            with mock.patch.object(ViewerTunnel, "app", Routes()):
+                return tunnel.serve(method="GET", url="http://cad.invalid/__cad/drawing?file=/m/a.dxf", headers=headers, body=b"")
+
+        def read() -> bytes:
+            first = part(0)
+            etag = first["headers"]["etag"]
+            replies = [first] + [part(offset, etag) for offset in range(MAX_REPLY_BYTES, len(body), MAX_REPLY_BYTES)]
+            self.assertEqual({reply["headers"]["etag"] for reply in replies}, {etag})
+            return b"".join(base64.b64decode(reply["body"]) for reply in replies)
+
+        self.assertEqual(read(), body)
+        self.assertEqual(len(runs), 1, "the route ran for a later part")
+        # Its last part sent, the body is not kept: the next read produces it again, once.
+        self.assertEqual(read(), body)
+        self.assertEqual(len(runs), 2)
 
 
 if __name__ == "__main__":

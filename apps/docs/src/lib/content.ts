@@ -20,6 +20,12 @@ export const support = {
 // (the README's Install, which says the same).
 export const agentInstallByline = "Send this message to your agent and it will install text-to-cad for you.";
 export const agentInstallMessage = "Install text-to-cad from https://github.com/earthtojake/text-to-cad";
+// What it sends, said under the message before anything is installed, to the person and to the agent
+// that reads it. Only what holds for every release that sends anything by default, so a copy that has
+// not updated yet is never told less than it sends; the cadgen a person runs says the rest itself. The
+// README says it word for word. The command is in backticks, which the page sets as code.
+export const telemetryNote =
+  "By default, text-to-cad sends usage stats and crash reports, tagged with a random ID and never including your files, paths or prompts; turn them off with `uvx cadgen telemetry off`, or ask your agent to.";
 // The same message, opened in an agent app with its composer prefilled, never sent: Claude Code in
 // Claude Desktop (claude://code/new, Claude's help center, "Open Claude Desktop with a link"), the
 // Codex app (codex://threads/new, its commands reference) and Cursor (its prompt deeplink, Cursor's
@@ -96,13 +102,19 @@ export const installs = [
   },
   // QwenPaw plugins cannot register an MCP server, so the skills install per skill from the
   // latest branch, and the CAD server is a manual MCP entry (the README's QwenPaw section has
-  // the config and the access-policy step -- QwenPaw denies a server's calls without one).
+  // the config and the access-policy step -- QwenPaw blocks every tool until a policy allows
+  // it). It refuses to install a skill that already exists, so an update uninstalls first.
   {
     id: "qwenpaw",
     agent: "QwenPaw",
-    note: "Installs the skills only; the CAD server is a manual MCP entry — see the README's QwenPaw section.",
+    note: "Installs the skills only; the CAD server is a manual MCP entry — setup in",
+    noteLink: { text: "the README's QwenPaw section", href: "https://github.com/earthtojake/text-to-cad#qwenpaw" },
     command:
       "for skill in cad dxf urdf srdf sdf step-parts engineering-drawing dfam-check dfm gcode bambu-labs sendcutsend; do\n  qwenpaw skills install https://github.com/earthtojake/text-to-cad/tree/latest/skills/$skill --agent-id <agent>\ndone",
+    update:
+      "for skill in cad dxf urdf srdf sdf step-parts engineering-drawing dfam-check dfm gcode bambu-labs sendcutsend; do\n  qwenpaw skills uninstall $skill --agent-id <agent>\ndone\nfor skill in cad dxf urdf srdf sdf step-parts engineering-drawing dfam-check dfm gcode bambu-labs sendcutsend; do\n  qwenpaw skills install https://github.com/earthtojake/text-to-cad/tree/latest/skills/$skill --agent-id <agent>\ndone",
+    remove:
+      "for skill in cad dxf urdf srdf sdf step-parts engineering-drawing dfam-check dfm gcode bambu-labs sendcutsend; do\n  qwenpaw skills uninstall $skill --agent-id <agent>\ndone",
   },
   {
     id: "other-agents",

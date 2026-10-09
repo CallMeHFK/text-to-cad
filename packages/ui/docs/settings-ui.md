@@ -419,7 +419,9 @@ open, and the explorer's compact indent: 10px a level (`TREE_INDENT_PX`), each l
 hung from a faint line under their owner's chevron (`TreeRowGuides`), as the explorer's
 are; its filter row is a heading's 28px, the box 20px tall and close to the row's walls. An assembly row's
 actions, shown on hover and kept while they are on, are **Isolate** then the **Hide/Reveal** eye; a part file has no
-Isolate. They float over the row's right end rather than taking width from it:
+Isolate. A Links row that draws something — a link with visuals, or one visual —
+has the eye alone, in its search hit too: a link's hides its own visuals, never its
+child links, and on a partly hidden link hides the rest. They float over the row's right end rather than taking width from it:
 the name runs the row's full width and, while an action shows, fades out half a
 rem before them (a mask, `ROW_NAME_UNDER_ACTIONS`), so nothing is drawn behind the
 buttons and the row keeps its own colour.
@@ -518,7 +520,7 @@ what the host supplies:
   (`navigation.home`): it shows the home in this view. The home's own menu has none.
 - The host's own on/off settings (`appSettings`), a checkbox item each, in the order they
   come, checked at the right; a press turns one without closing the menu. **Share
-  anonymous usage data** and **Quick edit** — on until the person turns it off
+  usage stats** and **Quick edit** — on until the person turns it off
   ([Quick Edit](#quick-edit)) — in both apps.
 - **Send feedback**, where the host has a tracker (`links.issues`): a link to a new issue
   titled "Feedback: " for the person to finish, naming the version and the platform, with

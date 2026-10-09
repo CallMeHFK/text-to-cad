@@ -18,6 +18,7 @@ import {
   pluginRequestUrl,
   skillGroups,
   support,
+  telemetryNote,
 } from "@/lib/content";
 import { absoluteUrl, siteConfig } from "@/lib/site";
 
@@ -51,6 +52,23 @@ function AgentMessage() {
         </div>
       </div>
     </div>
+  );
+}
+
+// What text-to-cad sends, under the message (src/lib/content.ts): its command set as code, and the
+// privacy policy, which says the rest.
+function TelemetryNote() {
+  return (
+    <p className="text-sm leading-6 text-muted-foreground">
+      {telemetryNote.split("`").map((part, index) =>
+        index % 2 ? <code key={index} className="font-mono text-foreground">{part}</code> : part,
+      )}{" "}
+      See the{" "}
+      <a href="/privacy-policy" className="text-foreground underline underline-offset-4">
+        privacy policy
+      </a>
+      .
+    </p>
   );
 }
 
@@ -157,7 +175,19 @@ function Install({ item }: { item: (typeof installs)[number] }) {
         <h3 className="text-base font-semibold text-foreground">
           <TitleLink anchor={item.id}>{item.agent}</TitleLink>
         </h3>
-        {item.note ? <p className="mt-1 text-sm leading-6 text-muted-foreground">{item.note}</p> : null}
+        {item.note ? (
+          <p className="mt-1 text-sm leading-6 text-muted-foreground">
+            {item.note}
+            {item.noteLink ? (
+              <>
+                {" "}
+                <a href={item.noteLink.href} className="text-foreground underline underline-offset-4">
+                  {item.noteLink.text}
+                </a>
+              </>
+            ) : null}
+          </p>
+        ) : null}
       </div>
       {item.listing ? (
         <>
@@ -291,6 +321,7 @@ export default function Home() {
                 <p className="mt-1 text-sm leading-6 text-muted-foreground">{agentInstallByline}</p>
               </div>
               <AgentMessage />
+              <TelemetryNote />
             </div>
             <div className="space-y-6 pt-6">
               {installs.map((item) => (

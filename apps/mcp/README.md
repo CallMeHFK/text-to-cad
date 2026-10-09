@@ -85,7 +85,7 @@ reference host `basic-host` does.
   there lands where nobody is looking. Only a `cad_show` that names the sidebar's view reaches
   it. Only sidebar views are shared; a thread's tabs are that conversation's.
 - **Two requests to the network: the version check, and analytics with consent.**
-  Both go to `api.texttocad.dev` (the docs site's `/v1`). Once a day at most, cadgen
+  Both go to `api.texttocad.dev` (`apps/api`). Once a day at most, cadgen
   reads the version feed (`cadgen/updates.py`): one anonymous GET, with no id and
   nothing about the person (`CADGEN_UPDATE_CHECK=0` turns it off; never in CI or from
   a source tree). While this install is behind, the navbar and the home show the
@@ -108,21 +108,29 @@ reference host `basic-host` does.
   the server's environment (`CADGEN_INSTALL_CHANNEL`, `cadgen/_internal/channel.py`),
   with `CADGEN_AUTO_UPDATED=1` where something else keeps the copy up to date: only a
   copy nothing else updates checks and is told. A store's copy (the Claude or OpenAI directory, the Cursor
-  Marketplace) is left to its store, and Gemini's extension to Gemini. The analytics: the server
-  notes its use -- tool calls (not the page's plumbing), view activity from each
-  view's sync (`focused`), and the files views show (counted as a view adds one to
-  the library), as salted one-way codes --
-  and, only with consent, sends it once a minute (`cadgen/analytics.py`): never a
-  path, an argument or a file. Every install is asked once by the page
-  (`/__cad/analytics`, the shared `ConsentCard` from `@text-to-cad/ui/consent`, the
-  viewer's `notice`: top-right once a model is on screen, Quick Edit under it,
-  never on the home; the browser viewer asks the same way, and one answer counts
-  for both), and nothing is sent before a yes; the app menu's **Share anonymous usage
-  data** (`appSettings`) changes the answer later. Its **Quick edit** (on until
+  Marketplace) is left to its store, and Gemini's extension to Gemini. The telemetry: the server
+  counts its use -- tool calls (not the page's plumbing), view activity from each
+  view's sync (`focused`), and the files views show (counted by format, once a day,
+  as a view adds one to the library) --
+  and sends the counts at most every five minutes (`cadgen/analytics.py`): never a path,
+  an argument or a file. A Quick Edit that went is counted through the host's `usage`, and
+  crashes are reported too: a tool's call or a route that failed for no reason its caller
+  gave, and the page's own (`main.tsx`, its frames named by the chunks the inline loader
+  made blob URLs of, and by each chunk's debug id), as their type and frames, never a message.
+  The build keeps a source map of each chunk as the page runs it (`dist/sourcemaps`, which a
+  release uploads to PostHog), leading into the shared packages' own source, whose modules
+  load with their maps (`@text-to-cad/core/source-maps`): every edit the build makes to a
+  module or a chunk is folded into rolldown's map, each import's placeholder is as wide as the
+  blob URL that replaces it, and the chunk's debug
+  id is the one its edited text and map decide (`@text-to-cad/core/chunk-ids`), never the
+  id of the unedited chunk the CAD Viewer may ship. It is on by default once
+  a `cadgen` command has said so, once, and nothing asks. The app menu's **Share usage
+  stats** (`appSettings`, through `/__cad/analytics`) changes the answer, one answer for
+  this app and the browser viewer. Its **Quick edit** (on until
   the person turns it off) is read and changed the same way, through `/__cad/features`, and kept
   beside the analytics answer (`cadgen/features.py`): one choice for the sidebar, every
   thread's tab, every inline card and the browser viewer. The channel is reported with the
-  counts; it decides nothing there. The agent's `cad_analytics` reports the
+  counts; it decides nothing there. The agent's `cad_telemetry` reports the
   setting and turns it off, never on.
 - **Told how it is presented, before it greets the host.** A host that mounts
   views inline is served the page with `<meta name="cad-presentation"
@@ -176,7 +184,9 @@ reference host `basic-host` does.
   read, and the cache verifies a tessellation's digest of the whole as of any
   body. The server refuses any reply still longer (502), and an agent's
   screenshot longer than that, rather than send it. 4 MiB loads as fast as 8 MiB
-  did.
+  did. The server produces such a body once: each later part names it
+  (`if-range: <etag>`) and is cut from the body the first part kept, never by
+  running the route again.
 - **One file.** The build inlines scripts, styles, workers (as blobs) and the
   drawing editor's fonts (as data URIs) into `dist/index.html`, and fails if
   anything would be left outside it: the host serves one resource and nothing
@@ -201,6 +211,16 @@ reference host `basic-host` does.
   the view shows the saved file), handed to the client as its
   `editingPreviewFeed`. A sync that brought news (an event, a moving build) is
   followed by the next sooner.
+
+- **A capture is of the model asked about, once it is drawn.** An agent captures
+  right after it opened a view, showed a model or rebuilt one, so `cad_screenshot`
+  waits rather than refusing: for a view it just opened (a tab from `cad_open`, a
+  card from `cad_show`) to sync for the first time (`OPENING_SECONDS`), then for
+  the view to show that model loaded and drawn (`host/capture.ts`,
+  `CAPTURE_SETTLE_MS`), within `views.CAPTURE_SECONDS` in all. A capture asked with
+  a show is of the model shown, never of the one the view is leaving. What it
+  cannot wait out it says: a card the chat never drew, a model that did not finish
+  loading, a view out of sight that did not answer.
 
 ## Host adapter (`src/host`)
 

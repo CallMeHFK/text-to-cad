@@ -89,11 +89,15 @@ class PluginManifestPolicyTest(unittest.TestCase):
 
     def test_the_readme_and_the_docs_site_install_alike(self) -> None:
         # The README and the docs site's homepage are one copy (apps/docs/README.md): the message an
-        # agent is sent and every install, update and remove command say the same, word for word, in both.
+        # agent is sent, what it sends, and every install, update and remove command say the same, word
+        # for word, in both.
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
         page = (REPO_ROOT / "apps" / "docs" / "src" / "lib" / "content.ts").read_text(encoding="utf-8")
         message = re.search(r'const agentInstallMessage = "([^"]+)"', page).group(1)
         self.assertIn(f"```text\n{message}\n```", readme)
+        # What it sends, said under the message: the same sentence, however the README wraps it.
+        note = re.search(r'const telemetryNote =\s*"([^"]+)"', page).group(1)
+        self.assertIn(note, " ".join(readme.split()))
         commands = [command.replace("\\n", "\n")
                     for command in re.findall(r'\b(?:command|update|remove):\s*"([^"]+)"', page)]
         self.assertGreaterEqual(len(commands), 16)
@@ -359,7 +363,7 @@ class PluginManifestPolicyTest(unittest.TestCase):
             "README.md": {"CADGEN_INSTALL_CHANNEL": "claude-desktop"},
         })
         # Every channel any package names is one the analytics receiver takes.
-        receiver = (REPO_ROOT / "apps" / "docs" / "src" / "lib" / "api" / "events.mjs").read_text(encoding="utf-8")
+        receiver = (REPO_ROOT / "apps" / "api" / "src" / "events.mjs").read_text(encoding="utf-8")
         named = {env["CADGEN_INSTALL_CHANNEL"] for env in said.values()} | {"claude-directory", "cursor-github",
                                                                            "openai-directory", "dev"}
         for channel in sorted(named):
